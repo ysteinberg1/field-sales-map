@@ -198,7 +198,7 @@ export default function FieldMap() {
         if (pressTimer) clearTimeout(pressTimer);
       });
     });
-  }, []);
+  }, [salesman]);
 
   const chooseSalesman = (name: string) => {
     window.localStorage.setItem("fsm_salesman", name);
