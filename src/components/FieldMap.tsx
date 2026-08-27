@@ -86,10 +86,23 @@ export default function FieldMap() {
       }
 
       // Load cached pins
-      const res = await fetch("/api/pins");
-      if (!res.ok) return;
-      const data = await res.json();
+      let data: { pins: Pin[] };
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 45000);
+        const res = await fetch("/api/pins", { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (!res.ok) {
+          console.error(`[field-map] /api/pins returned ${res.status}`);
+          return;
+        }
+        data = await res.json();
+      } catch (err) {
+        console.error("[field-map] Failed to load pins:", err);
+        return;
+      }
       const pins: Pin[] = data.pins;
+      console.log(`[field-map] Loaded ${pins.length} pins`);
 
       const geojson: GeoJSON.FeatureCollection = {
         type: "FeatureCollection",
