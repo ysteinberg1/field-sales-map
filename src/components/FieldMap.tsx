@@ -48,13 +48,10 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
     streets: {
       type: "raster",
       tiles: [
-        "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-        "https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-        "https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
-        "https://d.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
       ],
       tileSize: 256,
-      attribution: "© OpenStreetMap contributors © CARTO",
+      attribution: "© Esri, HERE, Garmin, FAO, NOAA, USGS",
     },
     satellite: {
       type: "raster",
@@ -91,7 +88,12 @@ export default function FieldMap() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [salesman, setSalesman] = useState<string | null>(null);
-  const [pendingPoint, setPendingPoint] = useState<{ lat: number; lng: number } | null>(null);
+  const [pendingPoint, setPendingPoint] = useState<{
+    lat: number;
+    lng: number;
+    address: string | null;
+    loadingAddress: boolean;
+  } | null>(null);
   const [dealName, setDealName] = useState("");
   const [saving, setSaving] = useState(false);
   const [baseStyle, setBaseStyle] = useState<"streets" | "satellite">("streets");
@@ -232,24 +234,53 @@ export default function FieldMap() {
           });
       });
 
-      // Long-press / click on empty map to drop a new pin
+      // Long-press on empty map to drop a new pin. A held-still press picks
+      // up the address; a held-and-dragged press is a pan and must not.
+      const DRAG_CANCEL_PX = 6;
       let pressTimer: ReturnType<typeof setTimeout> | null = null;
-      map.on("mousedown", (e) => {
-        pressTimer = setTimeout(() => {
-          setPendingPoint({ lat: e.lngLat.lat, lng: e.lngLat.lng });
-        }, 500);
-      });
-      map.on("mouseup", () => {
+      let pressOrigin: { x: number; y: number } | null = null;
+
+      const cancelPress = () => {
         if (pressTimer) clearTimeout(pressTimer);
-      });
-      map.on("touchstart", (e) => {
-        pressTimer = setTimeout(() => {
-          setPendingPoint({ lat: e.lngLat.lat, lng: e.lngLat.lng });
+        pressTimer = null;
+        pressOrigin = null;
+      };
+
+      const startPress = (point: { x: number; y: number }, lngLat: maplibregl.LngLat) => {
+        pressOrigin = point;
+        pressTimer = setTimeout(async () => {
+          pressTimer = null;
+          const { lat, lng } = lngLat;
+          setPendingPoint({ lat, lng, address: null, loadingAddress: true });
+          let address: string | null = null;
+          try {
+            const res = await fetch(
+              `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`,
+              { headers: { Accept: "application/json" } }
+            );
+            const data = await res.json();
+            address = data.display_name ?? null;
+          } catch {
+            address = null;
+          }
+          setPendingPoint((p) => (p && p.lat === lat && p.lng === lng ? { ...p, address, loadingAddress: false } : p));
         }, 500);
-      });
-      map.on("touchend", () => {
-        if (pressTimer) clearTimeout(pressTimer);
-      });
+      };
+
+      const checkDrag = (point: { x: number; y: number }) => {
+        if (!pressOrigin) return;
+        const dx = point.x - pressOrigin.x;
+        const dy = point.y - pressOrigin.y;
+        if (Math.hypot(dx, dy) > DRAG_CANCEL_PX) cancelPress();
+      };
+
+      map.on("mousedown", (e) => startPress(e.point, e.lngLat));
+      map.on("mousemove", (e) => checkDrag(e.point));
+      map.on("mouseup", cancelPress);
+      map.on("touchstart", (e) => startPress(e.point, e.lngLat));
+      map.on("touchmove", (e) => checkDrag(e.point));
+      map.on("touchend", cancelPress);
+      map.on("dragstart", cancelPress); // map itself started panning — definitely not a long-press
     });
   }, [salesman]);
 
@@ -279,6 +310,7 @@ export default function FieldMap() {
         name: dealName,
         lat: pendingPoint.lat,
         lng: pendingPoint.lng,
+        address: pendingPoint.address,
         salesman,
       }),
     });
@@ -329,7 +361,12 @@ export default function FieldMap() {
 
       {pendingPoint && (
         <div className="absolute inset-x-0 bottom-0 z-10 rounded-t-2xl bg-white p-4 shadow-lg">
-          <div className="mb-2 text-sm text-neutral-500">New lead — {salesman}</div>
+          <div className="mb-1 text-sm text-neutral-500">New lead — {salesman}</div>
+          <div className="mb-3 text-sm font-medium text-neutral-800">
+            {pendingPoint.loadingAddress
+              ? "Looking up address…"
+              : pendingPoint.address ?? "Couldn't look up an address — you can still save this pin."}
+          </div>
           <input
             className="mb-3 w-full rounded border px-3 py-2"
             placeholder="Business / customer name"
@@ -346,7 +383,7 @@ export default function FieldMap() {
             </button>
             <button
               className="flex-1 rounded bg-green-600 py-2 text-white disabled:opacity-50"
-              disabled={!dealName || saving}
+              disabled={!dealName || saving || pendingPoint.loadingAddress}
               onClick={submitDeal}
             >
               {saving ? "Saving…" : "Create Lead"}
