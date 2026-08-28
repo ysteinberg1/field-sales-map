@@ -4,6 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
+// maplibre-gl resolves its worker script relative to its own bundled chunk's
+// import.meta.url, which doesn't exist once Next.js/webpack bundles it into
+// _next/static/chunks/*.js — that 404s and Vercel serves back HTML, which the
+// browser then rejects as a module script ("non-JavaScript MIME type").
+// Point it at the matching worker files we've vendored into public/ instead.
+maplibregl.setWorkerUrl("/maplibre-gl-worker.mjs");
+
 interface Pin {
   board: string;
   tier: number;
