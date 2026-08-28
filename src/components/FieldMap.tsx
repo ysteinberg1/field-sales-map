@@ -39,6 +39,38 @@ const BOARD_IDS: Record<string, number> = {
 
 const SALESMEN = ["Yoel", "Ari", "Chuny", "Shragie", "Neil", "JJ"];
 
+// Free, no-API-key raster basemaps. Streets and satellite are both defined
+// as sources up front and toggled via layer visibility (not map.setStyle),
+// so switching never disturbs the pins/clusters layers sitting on top.
+const BASE_STYLE: maplibregl.StyleSpecification = {
+  version: 8,
+  sources: {
+    streets: {
+      type: "raster",
+      tiles: [
+        "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
+        "https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
+        "https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
+        "https://d.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png",
+      ],
+      tileSize: 256,
+      attribution: "© OpenStreetMap contributors © CARTO",
+    },
+    satellite: {
+      type: "raster",
+      tiles: [
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      ],
+      tileSize: 256,
+      attribution: "© Esri, Maxar, Earthstar Geographics",
+    },
+  },
+  layers: [
+    { id: "streets-layer", type: "raster", source: "streets", layout: { visibility: "visible" } },
+    { id: "satellite-layer", type: "raster", source: "satellite", layout: { visibility: "none" } },
+  ],
+};
+
 // Raw Monday column ID -> human label, for the tap-to-view popup.
 const FIELD_LABELS: Record<string, string> = {
   color_mm4v4hed: "Lead Owner",
@@ -62,6 +94,7 @@ export default function FieldMap() {
   const [pendingPoint, setPendingPoint] = useState<{ lat: number; lng: number } | null>(null);
   const [dealName, setDealName] = useState("");
   const [saving, setSaving] = useState(false);
+  const [baseStyle, setBaseStyle] = useState<"streets" | "satellite">("streets");
 
   useEffect(() => {
     const saved = window.localStorage.getItem("fsm_salesman");
@@ -73,7 +106,7 @@ export default function FieldMap() {
 
     const map = new maplibregl.Map({
       container: mapContainer.current,
-      style: "https://demotiles.maplibre.org/style.json", // swap for a nicer free style (e.g. MapTiler) later
+      style: BASE_STYLE,
       center: [-74.15, 40.85], // NJ/NY fallback
       zoom: 10,
     });
@@ -220,6 +253,17 @@ export default function FieldMap() {
     });
   }, [salesman]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const applyVisibility = () => {
+      map.setLayoutProperty("streets-layer", "visibility", baseStyle === "streets" ? "visible" : "none");
+      map.setLayoutProperty("satellite-layer", "visibility", baseStyle === "satellite" ? "visible" : "none");
+    };
+    if (map.isStyleLoaded()) applyVisibility();
+    else map.once("load", applyVisibility);
+  }, [baseStyle]);
+
   const chooseSalesman = (name: string) => {
     window.localStorage.setItem("fsm_salesman", name);
     setSalesman(name);
@@ -263,6 +307,25 @@ export default function FieldMap() {
   return (
     <div className="relative h-dvh w-full">
       <div ref={mapContainer} className="h-full w-full" />
+
+      <div className="absolute right-3 top-3 z-10 flex overflow-hidden rounded-lg shadow-lg">
+        <button
+          onClick={() => setBaseStyle("streets")}
+          className={`px-3 py-2 text-sm font-medium ${
+            baseStyle === "streets" ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
+          }`}
+        >
+          Streets
+        </button>
+        <button
+          onClick={() => setBaseStyle("satellite")}
+          className={`px-3 py-2 text-sm font-medium ${
+            baseStyle === "satellite" ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
+          }`}
+        >
+          Satellite
+        </button>
+      </div>
 
       {pendingPoint && (
         <div className="absolute inset-x-0 bottom-0 z-10 rounded-t-2xl bg-white p-4 shadow-lg">
