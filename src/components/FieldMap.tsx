@@ -42,16 +42,25 @@ const SALESMEN = ["Yoel", "Ari", "Chuny", "Shragie", "Neil", "JJ"];
 // Free, no-API-key raster basemaps. Streets and satellite are both defined
 // as sources up front and toggled via layer visibility (not map.setStyle),
 // so switching never disturbs the pins/clusters layers sitting on top.
+// "Streets" is Esri's Light Gray Canvas (muted gray/green, like SalesRabbit's
+// map) — a base layer plus a separate reference layer for roads/labels.
 const BASE_STYLE: maplibregl.StyleSpecification = {
   version: 8,
   sources: {
-    streets: {
+    "streets-base": {
       type: "raster",
       tiles: [
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+        "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
       ],
       tileSize: 256,
-      attribution: "© Esri, HERE, Garmin, FAO, NOAA, USGS",
+      attribution: "© Esri",
+    },
+    "streets-reference": {
+      type: "raster",
+      tiles: [
+        "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+      ],
+      tileSize: 256,
     },
     satellite: {
       type: "raster",
@@ -63,7 +72,8 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
     },
   },
   layers: [
-    { id: "streets-layer", type: "raster", source: "streets", layout: { visibility: "visible" } },
+    { id: "streets-base-layer", type: "raster", source: "streets-base", layout: { visibility: "visible" } },
+    { id: "streets-reference-layer", type: "raster", source: "streets-reference", layout: { visibility: "visible" } },
     { id: "satellite-layer", type: "raster", source: "satellite", layout: { visibility: "none" } },
   ],
 };
@@ -88,6 +98,7 @@ const FIELD_LABELS: Record<string, string> = {
 export default function FieldMap() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
+  const pendingMarkerRef = useRef<maplibregl.Marker | null>(null);
   const [salesman, setSalesman] = useState<string | null>(null);
   const [pendingPoint, setPendingPoint] = useState<{
     lat: number;
@@ -161,7 +172,7 @@ export default function FieldMap() {
         data: geojson,
         cluster: true,
         clusterMaxZoom: 14,
-        clusterRadius: 40,
+        clusterRadius: 70, // fewer, bigger cluster bubbles instead of many small overlapping ones
       });
 
       map.addLayer({
@@ -171,7 +182,7 @@ export default function FieldMap() {
         filter: ["has", "point_count"],
         paint: {
           "circle-color": "#dc2626",
-          "circle-radius": ["step", ["get", "point_count"], 16, 50, 22, 200, 28],
+          "circle-radius": ["step", ["get", "point_count"], 14, 50, 20, 200, 26],
           "circle-opacity": 0.85,
         },
       });
@@ -254,6 +265,8 @@ export default function FieldMap() {
       // hand jitter alone crosses a few pixels and reads as a drag.
       const openNewLeadPanel = async (lngLat: maplibregl.LngLat) => {
         const { lat, lng } = lngLat;
+        pendingMarkerRef.current?.remove();
+        pendingMarkerRef.current = new maplibregl.Marker({ color: "#16a34a" }).setLngLat(lngLat).addTo(map);
         setPendingPoint({ lat, lng, address: null, loadingAddress: true });
         let address: string | null = null;
         try {
@@ -262,7 +275,8 @@ export default function FieldMap() {
             { headers: { Accept: "application/json" } }
           );
           const data = await res.json();
-          address = data.display_name ?? null;
+          // Nominatim always appends the country — redundant for a NJ/NY field team.
+          address = data.display_name ? data.display_name.replace(/, United States$/, "") : null;
         } catch {
           address = null;
         }
@@ -310,7 +324,9 @@ export default function FieldMap() {
     const map = mapRef.current;
     if (!map) return;
     const applyVisibility = () => {
-      map.setLayoutProperty("streets-layer", "visibility", baseStyle === "streets" ? "visible" : "none");
+      const streetsVisible = baseStyle === "streets" ? "visible" : "none";
+      map.setLayoutProperty("streets-base-layer", "visibility", streetsVisible);
+      map.setLayoutProperty("streets-reference-layer", "visibility", streetsVisible);
       map.setLayoutProperty("satellite-layer", "visibility", baseStyle === "satellite" ? "visible" : "none");
     };
     if (map.isStyleLoaded()) applyVisibility();
@@ -337,8 +353,16 @@ export default function FieldMap() {
       }),
     });
     setSaving(false);
+    pendingMarkerRef.current?.remove();
+    pendingMarkerRef.current = null;
     setPendingPoint(null);
     setDealName("");
+  };
+
+  const cancelPendingPoint = () => {
+    pendingMarkerRef.current?.remove();
+    pendingMarkerRef.current = null;
+    setPendingPoint(null);
   };
 
   if (!salesman) {
@@ -382,13 +406,15 @@ export default function FieldMap() {
       </div>
 
       {pendingPoint && (
-        <div className="absolute inset-x-0 bottom-0 z-10 rounded-t-2xl bg-white p-4 shadow-lg">
+        <div className="absolute inset-x-0 bottom-0 z-10 rounded-t-2xl bg-white p-4 shadow-lg sm:inset-x-auto sm:bottom-3 sm:left-3 sm:w-80 sm:rounded-2xl">
           <div className="mb-1 text-sm text-neutral-500">New lead — {salesman}</div>
-          <div className="mb-3 text-sm font-medium text-neutral-800">
-            {pendingPoint.loadingAddress
-              ? "Looking up address…"
-              : pendingPoint.address ?? "Couldn't look up an address — you can still save this pin."}
-          </div>
+          <input
+            className="mb-3 w-full rounded border px-3 py-2 text-sm text-neutral-700"
+            placeholder={pendingPoint.loadingAddress ? "Looking up address…" : "Address (edit if needed)"}
+            value={pendingPoint.address ?? ""}
+            disabled={pendingPoint.loadingAddress}
+            onChange={(e) => setPendingPoint((p) => (p ? { ...p, address: e.target.value } : p))}
+          />
           <input
             className="mb-3 w-full rounded border px-3 py-2"
             placeholder="Business / customer name"
@@ -397,10 +423,7 @@ export default function FieldMap() {
             autoFocus
           />
           <div className="flex gap-2">
-            <button
-              className="flex-1 rounded bg-neutral-200 py-2"
-              onClick={() => setPendingPoint(null)}
-            >
+            <button className="flex-1 rounded bg-neutral-200 py-2" onClick={cancelPendingPoint}>
               Cancel
             </button>
             <button
