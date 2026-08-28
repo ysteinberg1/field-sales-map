@@ -209,10 +209,16 @@ export default function FieldMap() {
         const feature = e.features?.[0];
         if (!feature) return;
         const props = feature.properties as any;
-        new maplibregl.Popup()
+        // One popup instance, updated in place — a second `new Popup()` here
+        // would stack on top of the first instead of replacing it.
+        const popup = new maplibregl.Popup()
           .setLngLat((feature.geometry as any).coordinates)
           .setHTML(
-            `<strong>${props.name}</strong><br/>${props.address ?? ""}<br/><em>loading details…</em>`
+            `<div class="min-w-[200px]">
+               <div class="font-semibold text-neutral-900">${props.name}</div>
+               ${props.address ? `<div class="text-sm text-neutral-500">${props.address}</div>` : ""}
+               <div class="mt-1 text-sm italic text-neutral-400">Loading details…</div>
+             </div>`
           )
           .addTo(map);
 
@@ -221,21 +227,47 @@ export default function FieldMap() {
           .then((full) => {
             const rows = Object.entries(full.details)
               .filter(([, v]) => v)
-              .map(([k, v]) => `<div>${FIELD_LABELS[k] ?? k}: ${v}</div>`)
+              .map(
+                ([k, v]) =>
+                  `<div><span class="text-neutral-400">${FIELD_LABELS[k] ?? k}:</span> ${v}</div>`
+              )
               .join("");
             const boardId = BOARD_IDS[props.board];
             const mondayUrl = `${MONDAY_WORKSPACE_URL}/boards/${boardId}/pulses/${props.itemId}`;
-            new maplibregl.Popup()
-              .setLngLat((feature.geometry as any).coordinates)
-              .setHTML(
-                `<strong>${full.name}</strong>${rows}<div style="margin-top:8px"><a href="${mondayUrl}" target="_blank" rel="noopener noreferrer">Open in Monday →</a></div>`
-              )
-              .addTo(map);
+            popup.setHTML(
+              `<div class="min-w-[200px]">
+                 <div class="mb-1 font-semibold text-neutral-900">${full.name}</div>
+                 <div class="space-y-0.5 text-sm text-neutral-700">${rows}</div>
+                 <a href="${mondayUrl}" target="_blank" rel="noopener noreferrer"
+                    class="mt-2 inline-block text-sm font-medium text-blue-600 hover:underline">
+                   Open in Monday →
+                 </a>
+               </div>`
+            );
           });
       });
 
-      // Long-press on empty map to drop a new pin. A held-still press picks
-      // up the address; a held-and-dragged press is a pan and must not.
+      // Drop a new pin: long-press on touch (a held-still press picks up the
+      // address; a held-and-dragged press is a pan and must not), right-click
+      // on desktop — holding a mouse button "still" for 500ms is unreliable,
+      // hand jitter alone crosses a few pixels and reads as a drag.
+      const openNewLeadPanel = async (lngLat: maplibregl.LngLat) => {
+        const { lat, lng } = lngLat;
+        setPendingPoint({ lat, lng, address: null, loadingAddress: true });
+        let address: string | null = null;
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`,
+            { headers: { Accept: "application/json" } }
+          );
+          const data = await res.json();
+          address = data.display_name ?? null;
+        } catch {
+          address = null;
+        }
+        setPendingPoint((p) => (p && p.lat === lat && p.lng === lng ? { ...p, address, loadingAddress: false } : p));
+      };
+
       const DRAG_CANCEL_PX = 6;
       let pressTimer: ReturnType<typeof setTimeout> | null = null;
       let pressOrigin: { x: number; y: number } | null = null;
@@ -248,22 +280,9 @@ export default function FieldMap() {
 
       const startPress = (point: { x: number; y: number }, lngLat: maplibregl.LngLat) => {
         pressOrigin = point;
-        pressTimer = setTimeout(async () => {
+        pressTimer = setTimeout(() => {
           pressTimer = null;
-          const { lat, lng } = lngLat;
-          setPendingPoint({ lat, lng, address: null, loadingAddress: true });
-          let address: string | null = null;
-          try {
-            const res = await fetch(
-              `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`,
-              { headers: { Accept: "application/json" } }
-            );
-            const data = await res.json();
-            address = data.display_name ?? null;
-          } catch {
-            address = null;
-          }
-          setPendingPoint((p) => (p && p.lat === lat && p.lng === lng ? { ...p, address, loadingAddress: false } : p));
+          void openNewLeadPanel(lngLat);
         }, 500);
       };
 
@@ -274,13 +293,15 @@ export default function FieldMap() {
         if (Math.hypot(dx, dy) > DRAG_CANCEL_PX) cancelPress();
       };
 
-      map.on("mousedown", (e) => startPress(e.point, e.lngLat));
-      map.on("mousemove", (e) => checkDrag(e.point));
-      map.on("mouseup", cancelPress);
       map.on("touchstart", (e) => startPress(e.point, e.lngLat));
       map.on("touchmove", (e) => checkDrag(e.point));
       map.on("touchend", cancelPress);
       map.on("dragstart", cancelPress); // map itself started panning — definitely not a long-press
+
+      map.on("contextmenu", (e) => {
+        e.preventDefault();
+        void openNewLeadPanel(e.lngLat);
+      });
     });
   }, [salesman]);
 
