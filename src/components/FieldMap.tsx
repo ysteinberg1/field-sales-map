@@ -39,6 +39,28 @@ const BOARD_IDS: Record<string, number> = {
 
 const SALESMEN = ["Yoel", "Ari", "Chuny", "Shragie", "Neil", "JJ"];
 
+// Exact labels from the SalesRabbit board's Status column (color_mm4vht3r) —
+// order matches Monday's own index order. Icons per status are a separate
+// design pass, tracked for later.
+const STATUS_OPTIONS = [
+  "Area To Canvas",
+  "Big Brand Corporate",
+  "CRM",
+  "Callback",
+  "Complete",
+  "Customer",
+  "Go Back !",
+  "Go Back - Low",
+  "Major Renovation Coming",
+  "Met - Needs Push",
+  "Not Interested",
+  "Not Qualified - DEAD",
+  "Other",
+  "Processing",
+  "To Visit",
+  "What's Here",
+];
+
 // Free, no-API-key raster basemaps. Streets and satellite are both defined
 // as sources up front and toggled via layer visibility (not map.setStyle),
 // so switching never disturbs the pins/clusters layers sitting on top.
@@ -53,6 +75,7 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
         "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
       ],
       tileSize: 256,
+      maxzoom: 16, // beyond this the service has no tiles and returns a "data not available" placeholder
       attribution: "© Esri",
     },
     "streets-reference": {
@@ -61,6 +84,7 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
         "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
       ],
       tileSize: 256,
+      maxzoom: 16,
     },
     satellite: {
       type: "raster",
@@ -99,6 +123,7 @@ export default function FieldMap() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const pendingMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const pinsDataRef = useRef<GeoJSON.FeatureCollection | null>(null);
   const [salesman, setSalesman] = useState<string | null>(null);
   const [pendingPoint, setPendingPoint] = useState<{
     lat: number;
@@ -107,6 +132,8 @@ export default function FieldMap() {
     loadingAddress: boolean;
   } | null>(null);
   const [dealName, setDealName] = useState("");
+  const [dealNote, setDealNote] = useState("");
+  const [dealStatus, setDealStatus] = useState(STATUS_OPTIONS[0]);
   const [saving, setSaving] = useState(false);
   const [baseStyle, setBaseStyle] = useState<"streets" | "satellite">("streets");
 
@@ -166,6 +193,7 @@ export default function FieldMap() {
           properties: { ...p },
         })),
       };
+      pinsDataRef.current = geojson;
 
       map.addSource("pins", {
         type: "geojson",
@@ -271,12 +299,18 @@ export default function FieldMap() {
         let address: string | null = null;
         try {
           const res = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`,
+            `https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=${lat}&lon=${lng}`,
             { headers: { Accept: "application/json" } }
           );
           const data = await res.json();
-          // Nominatim always appends the country — redundant for a NJ/NY field team.
-          address = data.display_name ? data.display_name.replace(/, United States$/, "") : null;
+          // Build from the structured fields, not display_name — display_name
+          // leads with the nearest named place/business ("School of Social
+          // Work - Newark, 33, Washington Street, ..."), which isn't the
+          // street address and isn't ours to claim as one.
+          const a = data.address ?? {};
+          const street = [a.house_number, a.road].filter(Boolean).join(" ");
+          const city = a.city ?? a.town ?? a.village ?? a.hamlet ?? a.suburb;
+          address = [street, city, a.state, a.postcode].filter(Boolean).join(", ") || null;
         } catch {
           address = null;
         }
@@ -339,30 +373,69 @@ export default function FieldMap() {
   };
 
   const submitDeal = async () => {
-    if (!pendingPoint || !dealName) return;
+    if (!pendingPoint) return;
+    // No business name typed? Fall back to just the street address (e.g.
+    // "33 Washington Street") rather than blocking the save on it.
+    const streetOnly = pendingPoint.address?.split(",")[0]?.trim();
+    const name = dealName.trim() || streetOnly;
+    if (!name) return;
+
     setSaving(true);
-    await fetch("/api/create-deal", {
+    const res = await fetch("/api/create-deal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: dealName,
+        name,
         lat: pendingPoint.lat,
         lng: pendingPoint.lng,
         address: pendingPoint.address,
         salesman,
+        note: dealNote || undefined,
+        status: dealStatus,
       }),
     });
+    const result = await res.json();
     setSaving(false);
     pendingMarkerRef.current?.remove();
     pendingMarkerRef.current = null;
+
+    // Drop the new pin straight into the map so it doesn't look like the
+    // save silently did nothing — matters a lot to a salesman in the field.
+    const map = mapRef.current;
+    if (result.ok && map && pinsDataRef.current) {
+      const newFeature: GeoJSON.Feature = {
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [pendingPoint.lng, pendingPoint.lat] },
+        properties: {
+          board: "salesrabbit",
+          tier: 3,
+          itemId: result.itemId,
+          name,
+          lat: pendingPoint.lat,
+          lng: pendingPoint.lng,
+          address: pendingPoint.address,
+        },
+      };
+      pinsDataRef.current = {
+        ...pinsDataRef.current,
+        features: [...pinsDataRef.current.features, newFeature],
+      };
+      (map.getSource("pins") as maplibregl.GeoJSONSource | undefined)?.setData(pinsDataRef.current);
+    }
+
     setPendingPoint(null);
     setDealName("");
+    setDealNote("");
+    setDealStatus(STATUS_OPTIONS[0]);
   };
 
   const cancelPendingPoint = () => {
     pendingMarkerRef.current?.remove();
     pendingMarkerRef.current = null;
     setPendingPoint(null);
+    setDealName("");
+    setDealNote("");
+    setDealStatus(STATUS_OPTIONS[0]);
   };
 
   if (!salesman) {
@@ -417,18 +490,36 @@ export default function FieldMap() {
           />
           <input
             className="mb-3 w-full rounded border px-3 py-2"
-            placeholder="Business / customer name"
+            placeholder="Business / customer name (optional — defaults to the street address)"
             value={dealName}
             onChange={(e) => setDealName(e.target.value)}
             autoFocus
           />
+          <textarea
+            className="mb-3 w-full rounded border px-3 py-2 text-sm"
+            placeholder="Note (optional)"
+            rows={2}
+            value={dealNote}
+            onChange={(e) => setDealNote(e.target.value)}
+          />
+          <select
+            className="mb-3 w-full rounded border px-3 py-2 text-sm text-neutral-700"
+            value={dealStatus}
+            onChange={(e) => setDealStatus(e.target.value)}
+          >
+            {STATUS_OPTIONS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
           <div className="flex gap-2">
             <button className="flex-1 rounded bg-neutral-200 py-2" onClick={cancelPendingPoint}>
               Cancel
             </button>
             <button
               className="flex-1 rounded bg-green-600 py-2 text-white disabled:opacity-50"
-              disabled={!dealName || saving || pendingPoint.loadingAddress}
+              disabled={(!dealName && !pendingPoint.address) || saving || pendingPoint.loadingAddress}
               onClick={submitDeal}
             >
               {saving ? "Saving…" : "Create Lead"}
