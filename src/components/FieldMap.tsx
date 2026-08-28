@@ -79,6 +79,7 @@ const FIELD_LABELS: Record<string, string> = {
   date4: "Deal Created",
   text_mm6dbpxy: "Address",
   color_mm6d1vdk: "Salesman",
+  date_mm6drq5j: "Sales Date",
   color_mkv0qrwq: "Salesman",
   deal_stage: "Stage",
   long_text_mm6khzqt: "Sales Notes",
