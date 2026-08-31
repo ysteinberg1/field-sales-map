@@ -27,6 +27,15 @@ const BOARD_IDS: Record<string, number> = {
   salesrabbit: 5099562913,
 };
 
+// Display names for the popup's "source" line and the board-filter toggle.
+const BOARD_LABELS: Record<string, string> = {
+  deals: "Monday Deals",
+  old_cashflow: "Old Cashflow",
+  pipedrive: "Pipedrive",
+  salesrabbit: "SalesRabbit",
+};
+const ALL_BOARDS = ["deals", "old_cashflow", "pipedrive", "salesrabbit"];
+
 const SALESMEN = ["Yoel", "Ari", "Chuny", "Shragie", "Neil", "JJ"];
 
 // Utility-territory overlay, exported from the SalesRabbit Google Earth
@@ -125,6 +134,8 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const showNearbyRef = useRef(false);
   const runNearbySearchRef = useRef<(() => void) | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const visibleBoardsRef = useRef<Set<string>>(new Set(ALL_BOARDS));
+  const renderPinsRef = useRef<((pins: Pin[]) => void) | null>(null);
 
   const [salesman, setSalesman] = useState<string | null>(null);
   const [pendingPoint, setPendingPoint] = useState<{
@@ -141,6 +152,8 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const [showTerritory, setShowTerritory] = useState(false);
   const [showNearby, setShowNearby] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+  const [visibleBoards, setVisibleBoards] = useState<Set<string>>(new Set(ALL_BOARDS));
+  const [boardFilterOpen, setBoardFilterOpen] = useState(false);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("fsm_salesman");
@@ -237,6 +250,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         infoWindow.setContent(
           `<div style="min-width:200px">
              <div style="font-weight:600;color:#171717">${pin.name}</div>
+             <div style="margin-bottom:2px;font-size:12px;font-weight:500;color:#2563eb">${BOARD_LABELS[pin.board] ?? pin.board}</div>
              ${pin.address ? `<div style="font-size:13px;color:#737373">${pin.address}</div>` : ""}
              <div style="margin-top:4px;font-size:13px;font-style:italic;color:#a3a3a3">Loading details…</div>
            </div>`
@@ -254,7 +268,8 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             const mondayUrl = `${MONDAY_WORKSPACE_URL}/boards/${boardId}/pulses/${pin.itemId}`;
             infoWindow.setContent(
               `<div style="min-width:200px">
-                 <div style="margin-bottom:4px;font-weight:600;color:#171717">${full.name}</div>
+                 <div style="margin-bottom:2px;font-weight:600;color:#171717">${full.name}</div>
+                 <div style="margin-bottom:4px;font-size:12px;font-weight:500;color:#2563eb">${BOARD_LABELS[pin.board] ?? pin.board}</div>
                  <div style="font-size:13px;color:#404040;line-height:1.4">${rows}</div>
                  <a href="${mondayUrl}" target="_blank" rel="noopener noreferrer"
                     style="margin-top:8px;display:inline-block;font-size:13px;font-weight:500;color:#2563eb">
@@ -270,7 +285,8 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         markersRef.current.forEach((m) => m.setMap(null));
         markersRef.current = new Map();
 
-        const markers = pins.map((pin) => {
+        const visible = pins.filter((pin) => visibleBoardsRef.current.has(pin.board));
+        const markers = visible.map((pin) => {
           const marker = new Marker({
             position: { lat: pin.lat, lng: pin.lng },
             icon: {
@@ -315,6 +331,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
 
         clustererRef.current = new MarkerClusterer({ map, markers, renderer });
       };
+      renderPinsRef.current = renderPins;
 
       // Load cached pins.
       try {
@@ -505,6 +522,20 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
     territoryOverlayRef.current?.setMap(showTerritory ? mapRef.current : null);
   }, [showTerritory]);
 
+  useEffect(() => {
+    visibleBoardsRef.current = visibleBoards;
+    renderPinsRef.current?.(pinsRef.current);
+  }, [visibleBoards]);
+
+  const toggleBoard = (board: string) => {
+    setVisibleBoards((prev) => {
+      const next = new Set(prev);
+      if (next.has(board)) next.delete(board);
+      else next.add(board);
+      return next;
+    });
+  };
+
   const chooseSalesman = (name: string) => {
     window.localStorage.setItem("fsm_salesman", name);
     setSalesman(name);
@@ -552,15 +583,17 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         stage: null,
       };
       pinsRef.current = [...pinsRef.current, newPin];
-      const marker = new google.maps.Marker({
-        position: { lat: newPin.lat, lng: newPin.lng },
-        icon: {
-          url: iconUrlForPin(newPin),
-          scaledSize: new google.maps.Size(window.innerWidth >= 1024 ? 40 : 30, window.innerWidth >= 1024 ? 40 : 30),
-        },
-      });
-      markersRef.current.set(`${newPin.board}:${newPin.itemId}`, marker);
-      clustererRef.current?.addMarker(marker);
+      if (visibleBoardsRef.current.has(newPin.board)) {
+        const marker = new google.maps.Marker({
+          position: { lat: newPin.lat, lng: newPin.lng },
+          icon: {
+            url: iconUrlForPin(newPin),
+            scaledSize: new google.maps.Size(window.innerWidth >= 1024 ? 40 : 30, window.innerWidth >= 1024 ? 40 : 30),
+          },
+        });
+        markersRef.current.set(`${newPin.board}:${newPin.itemId}`, marker);
+        clustererRef.current?.addMarker(marker);
+      }
     }
 
     setPendingPoint(null);
@@ -656,6 +689,34 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       >
         Nearby
       </button>
+
+      <div className="absolute right-3 top-52 z-10 sm:top-36">
+        <button
+          onClick={() => setBoardFilterOpen((v) => !v)}
+          className={`rounded-lg px-3 py-2 text-sm font-medium shadow-lg ${
+            boardFilterOpen ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
+          }`}
+        >
+          Boards
+        </button>
+        {boardFilterOpen && (
+          <div className="absolute right-0 mt-1 w-44 rounded-lg bg-white p-2 shadow-lg">
+            {ALL_BOARDS.map((board) => (
+              <label
+                key={board}
+                className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
+              >
+                <input
+                  type="checkbox"
+                  checked={visibleBoards.has(board)}
+                  onChange={() => toggleBoard(board)}
+                />
+                {BOARD_LABELS[board]}
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
 
       {pendingPoint && (
         <div className="absolute inset-x-0 bottom-0 z-10 rounded-t-2xl bg-white p-4 shadow-lg sm:inset-x-auto sm:bottom-3 sm:left-3 sm:w-80 sm:rounded-2xl">
