@@ -103,11 +103,22 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
       tileSize: 256,
       attribution: "© Esri, Maxar, Earthstar Geographics",
     },
+    // Roads/labels overlay for satellite imagery — "Hybrid" is this plus
+    // the satellite layer both visible at once.
+    "hybrid-reference": {
+      type: "raster",
+      tiles: [
+        "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+      ],
+      tileSize: 256,
+      attribution: "© Esri",
+    },
   },
   layers: [
     { id: "streets-base-layer", type: "raster", source: "streets-base", layout: { visibility: "visible" } },
     { id: "streets-reference-layer", type: "raster", source: "streets-reference", layout: { visibility: "visible" } },
     { id: "satellite-layer", type: "raster", source: "satellite", layout: { visibility: "none" } },
+    { id: "hybrid-reference-layer", type: "raster", source: "hybrid-reference", layout: { visibility: "none" } },
   ],
 };
 
@@ -144,7 +155,7 @@ export default function FieldMap() {
   const [dealNote, setDealNote] = useState("");
   const [dealStatus, setDealStatus] = useState(STATUS_OPTIONS[0]);
   const [saving, setSaving] = useState(false);
-  const [baseStyle, setBaseStyle] = useState<"streets" | "satellite">("streets");
+  const [baseStyle, setBaseStyle] = useState<"streets" | "satellite" | "hybrid">("streets");
   const [showTerritory, setShowTerritory] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
 
@@ -176,6 +187,10 @@ export default function FieldMap() {
           }
         );
       }
+
+      // Slightly bigger pin icons on desktop — a phone screen stays tight
+      // so more pins fit without crowding, but a desktop has room to spare.
+      const ICON_SIZE = window.innerWidth >= 1024 ? 0.85 : 0.55;
 
       // Utility-territory overlay — added early so it sits under the pins.
       map.addSource("utility-territory", {
@@ -278,7 +293,7 @@ export default function FieldMap() {
             ["==", ["get", "board"], "pipedrive"], "source-icon-pipedrive",
             "source-icon-monday",
           ],
-          "icon-size": 0.55,
+          "icon-size": ICON_SIZE,
           "icon-allow-overlap": true,
         },
       });
@@ -311,7 +326,7 @@ export default function FieldMap() {
             ...STATUS_OPTIONS.flatMap((s) => [s, `status-icon-${s}`]),
             "status-icon-__default__",
           ] as unknown as maplibregl.DataDrivenPropertyValueSpecification<string>,
-          "icon-size": 0.55,
+          "icon-size": ICON_SIZE,
           "icon-allow-overlap": true,
         },
       });
@@ -360,6 +375,18 @@ export default function FieldMap() {
 
       map.on("click", "unclustered-point", showPinPopup);
       map.on("click", "salesrabbit-points", showPinPopup);
+
+      // A pointer cursor over pins/clusters signals they're clickable —
+      // maplibre doesn't do this on its own.
+      const clickableLayers = ["unclustered-point", "salesrabbit-points", "clusters"];
+      for (const layerId of clickableLayers) {
+        map.on("mouseenter", layerId, () => {
+          map.getCanvas().style.cursor = "pointer";
+        });
+        map.on("mouseleave", layerId, () => {
+          map.getCanvas().style.cursor = "";
+        });
+      }
 
       // Drop a new pin: long-press on touch (a held-still press picks up the
       // address; a held-and-dragged press is a pan and must not), right-click
@@ -435,7 +462,10 @@ export default function FieldMap() {
       const streetsVisible = baseStyle === "streets" ? "visible" : "none";
       map.setLayoutProperty("streets-base-layer", "visibility", streetsVisible);
       map.setLayoutProperty("streets-reference-layer", "visibility", streetsVisible);
-      map.setLayoutProperty("satellite-layer", "visibility", baseStyle === "satellite" ? "visible" : "none");
+      // Hybrid is satellite imagery plus the roads/labels reference layer.
+      const satelliteVisible = baseStyle === "satellite" || baseStyle === "hybrid" ? "visible" : "none";
+      map.setLayoutProperty("satellite-layer", "visibility", satelliteVisible);
+      map.setLayoutProperty("hybrid-reference-layer", "visibility", baseStyle === "hybrid" ? "visible" : "none");
     };
     if (map.isStyleLoaded()) applyVisibility();
     else map.once("load", applyVisibility);
@@ -548,7 +578,7 @@ export default function FieldMap() {
       <img
         src="/provident-logo.png"
         alt="Provident LED"
-        className="absolute left-3 top-3 z-10 h-9 w-auto rounded-lg shadow-lg"
+        className="absolute left-3 top-3 z-10 h-9 w-9 rounded-full object-cover shadow-lg"
       />
 
       <div className="absolute right-3 top-3 z-10 flex overflow-hidden rounded-lg shadow-lg">
@@ -567,6 +597,14 @@ export default function FieldMap() {
           }`}
         >
           Satellite
+        </button>
+        <button
+          onClick={() => setBaseStyle("hybrid")}
+          className={`px-3 py-2 text-sm font-medium ${
+            baseStyle === "hybrid" ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
+          }`}
+        >
+          Hybrid
         </button>
       </div>
 

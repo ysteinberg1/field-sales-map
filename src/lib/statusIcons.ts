@@ -68,10 +68,20 @@ const GLYPHS: Record<IconKey, string> = {
   lock: `<rect x="5.5" y="11" width="13" height="9" rx="2" fill="white"/><path d="M8.2 11V7.6a3.8 3.8 0 0 1 7.6 0V11" fill="none" stroke="white" stroke-width="2" stroke-linecap="round"/>`,
 };
 
+// Same drop-shadow filter used by sourceIcons.ts, kept identical so every
+// pin on the map "pops" the same amount.
+const SHADOW_FILTER = `<filter id="shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1.4" flood-color="#000" flood-opacity="0.45"/></filter>`;
+
 export function statusIconSvg(status: string, size = 32): string {
   const meta = STATUS_ICON_META[status] ?? DEFAULT_ICON_META;
   const glyph = GLYPHS[meta.icon].replaceAll("PUNCH_COLOR", meta.color);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24"><rect x="1" y="1" width="22" height="22" rx="6" fill="${meta.color}"/>${glyph}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24">
+    <defs>${SHADOW_FILTER}</defs>
+    <g filter="url(#shadow)">
+      <rect x="1" y="1" width="22" height="22" rx="6" fill="${meta.color}"/>
+      ${glyph}
+    </g>
+  </svg>`;
 }
 
 export function statusIconDataUri(status: string, size = 32): string {

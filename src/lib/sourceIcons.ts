@@ -11,7 +11,9 @@
 // Pipedrive/Monday marks are their real logo files (pulled from their own
 // sites' favicons) — fine for an internal tool, not something we're
 // shipping commercially. "Won" isn't a brand mark, so it stays a drawn
-// SVG glyph like the rest of the icon set.
+// SVG glyph like the rest of the icon set. All three render as a circle
+// with a drop shadow so they read as pins sitting on the map, not flat
+// square stickers.
 export type SourceBadgeKind = "pipedrive" | "monday" | "won";
 
 const LOGO_FILES: Record<"pipedrive" | "monday", string> = {
@@ -19,11 +21,39 @@ const LOGO_FILES: Record<"pipedrive" | "monday", string> = {
   monday: "/monday-logo.png",
 };
 
-const WON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#00c875"/><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="white" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+// Same drop-shadow filter used by statusIcons.ts, kept identical so every
+// pin on the map "pops" the same amount.
+const SHADOW_FILTER = `<filter id="shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1.4" flood-color="#000" flood-opacity="0.45"/></filter>`;
 
-export function sourceBadgeDataUri(kind: SourceBadgeKind): string {
-  if (kind === "won") return `data:image/svg+xml;utf8,${encodeURIComponent(WON_SVG)}`;
-  return LOGO_FILES[kind];
+function wonSvg(size: number): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 48 48">
+    <defs>${SHADOW_FILTER}</defs>
+    <g filter="url(#shadow)">
+      <circle cx="24" cy="24" r="21" fill="#00c875"/>
+      <path d="M13 25l7 7L36 17" fill="none" stroke="white" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </svg>`;
+}
+
+function logoSvg(kind: "pipedrive" | "monday", size: number): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 48 48">
+    <defs>
+      ${SHADOW_FILTER}
+      <clipPath id="circle"><circle cx="24" cy="24" r="21"/></clipPath>
+    </defs>
+    <g filter="url(#shadow)">
+      <circle cx="24" cy="24" r="21" fill="white"/>
+      <image href="${LOGO_FILES[kind]}" x="2" y="2" width="44" height="44" preserveAspectRatio="xMidYMid slice" clip-path="url(#circle)"/>
+    </g>
+  </svg>`;
+}
+
+export function sourceBadgeSvg(kind: SourceBadgeKind, size = 48): string {
+  return kind === "won" ? wonSvg(size) : logoSvg(kind, size);
+}
+
+export function sourceBadgeDataUri(kind: SourceBadgeKind, size = 48): string {
+  return `data:image/svg+xml;utf8,${encodeURIComponent(sourceBadgeSvg(kind, size))}`;
 }
 
 export function loadSourceBadgeImage(kind: SourceBadgeKind, size = 48): Promise<HTMLImageElement> {
@@ -31,6 +61,6 @@ export function loadSourceBadgeImage(kind: SourceBadgeKind, size = 48): Promise<
     const img = new Image(size, size);
     img.onload = () => resolve(img);
     img.onerror = reject;
-    img.src = sourceBadgeDataUri(kind);
+    img.src = sourceBadgeDataUri(kind, size);
   });
 }
