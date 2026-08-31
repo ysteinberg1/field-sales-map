@@ -1,8 +1,9 @@
 // Small flat-icon badge set for SalesRabbit lead statuses — a colored
-// rounded square with a simple white glyph, matching SalesRabbit's own
-// "Lead Status Settings" icon style. One source of truth (SVG markup)
-// feeds both the status dropdown (as an <img> data URI) and the map
-// (as a maplibre image loaded from the same data URI).
+// circle with a simple white glyph, matching SalesRabbit's own map pins
+// (bright, saturated colors — not the muted admin-settings swatches).
+// One source of truth (SVG markup) feeds both the status dropdown (as an
+// <img> data URI) and the map (as a maplibre image loaded from the same
+// data URI).
 
 type IconKey =
   | "sun"
@@ -26,31 +27,33 @@ interface StatusIconMeta {
 }
 
 // Exact keys must match STATUS_OPTIONS in FieldMap.tsx (the live labels
-// off the SalesRabbit board's Status column).
+// off the SalesRabbit board's Status column). Colors are the vivid/accent
+// tier, not pastel — matches how bright SalesRabbit's own pins read.
 export const STATUS_ICON_META: Record<string, StatusIconMeta> = {
-  "Area To Canvas": { color: "#b5651d", icon: "sun" },
+  "Area To Canvas": { color: "#ff6d00", icon: "sun" },
   "Big Brand Corporate": { color: "#9e9e9e", icon: "shield" },
-  CRM: { color: "#4fc3f7", icon: "lock" },
-  Callback: { color: "#ffca28", icon: "phone" },
-  Complete: { color: "#3949ab", icon: "check" },
-  Customer: { color: "#43a047", icon: "badge" },
-  "Go Back !": { color: "#e53935", icon: "undo" },
-  "Go Back - Low": { color: "#fbc02d", icon: "undo" },
-  "Major Renovation Coming": { color: "#d81b60", icon: "flag" },
-  "Met - Needs Push": { color: "#5c6bc0", icon: "bug" },
+  CRM: { color: "#00b0ff", icon: "lock" },
+  Callback: { color: "#ffd600", icon: "phone" },
+  Complete: { color: "#304ffe", icon: "check" },
+  Customer: { color: "#00c853", icon: "badge" },
+  "Go Back !": { color: "#ff1744", icon: "undo" },
+  "Go Back - Low": { color: "#ffab00", icon: "undo" },
+  "Major Renovation Coming": { color: "#f50057", icon: "flag" },
+  "Met - Needs Push": { color: "#3d5afe", icon: "bug" },
   "Not Interested": { color: "#9e9e9e", icon: "x" },
   "Not Qualified - DEAD": { color: "#424242", icon: "x" },
-  Other: { color: "#8e24aa", icon: "ring" },
-  Processing: { color: "#4dd0c4", icon: "document" },
-  "To Visit": { color: "#7cb342", icon: "pin" },
-  "What's Here": { color: "#f0a500", icon: "question" },
+  Other: { color: "#d500f9", icon: "ring" },
+  Processing: { color: "#1de9b6", icon: "document" },
+  "To Visit": { color: "#64dd17", icon: "pin" },
+  "What's Here": { color: "#ff9100", icon: "question" },
 };
 
 const DEFAULT_ICON_META: StatusIconMeta = { color: "#616161", icon: "ring" };
 
-// Hand-drawn 24x24 glyphs, white fill/stroke, kept deliberately simple.
-// "pin" carries a PUNCH_COLOR placeholder for its hole, filled with the
-// badge's own background color so it reads as a punched-out circle.
+// Hand-drawn glyphs in a 24x24 local coordinate system, white fill/stroke,
+// kept deliberately simple. "pin" carries a PUNCH_COLOR placeholder for
+// its hole, filled with the badge's own background color so it reads as
+// a punched-out circle.
 const GLYPHS: Record<IconKey, string> = {
   sun: `<circle cx="12" cy="12" r="3.5" fill="white"/><g stroke="white" stroke-width="2" stroke-linecap="round"><line x1="12" y1="3" x2="12" y2="5.5"/><line x1="12" y1="18.5" x2="12" y2="21"/><line x1="3" y1="12" x2="5.5" y2="12"/><line x1="18.5" y1="12" x2="21" y2="12"/><line x1="5.6" y1="5.6" x2="7.4" y2="7.4"/><line x1="16.6" y1="16.6" x2="18.4" y2="18.4"/><line x1="5.6" y1="18.4" x2="7.4" y2="16.6"/><line x1="16.6" y1="7.4" x2="18.4" y2="5.6"/></g>`,
   question: `<path d="M9 9a3 3 0 1 1 4.5 2.6c-1 .6-1.5 1.1-1.5 2.4" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="17.5" r="1.1" fill="white"/>`,
@@ -69,27 +72,32 @@ const GLYPHS: Record<IconKey, string> = {
 };
 
 // Same drop-shadow filter used by sourceIcons.ts, kept identical so every
-// pin on the map "pops" the same amount.
-const SHADOW_FILTER = `<filter id="shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1" stdDeviation="1.4" flood-color="#000" flood-opacity="0.45"/></filter>`;
+// pin on the map "pops" the same amount. Needs real margin around the
+// badge shape to render into — a filter region alone isn't enough if the
+// outer <svg> canvas itself is only as big as the shape, since anything
+// past the canvas edge gets clipped regardless of the filter region.
+const SHADOW_FILTER = `<filter id="shadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="1.2" stdDeviation="1.6" flood-color="#000" flood-opacity="0.5"/></filter>`;
 
-export function statusIconSvg(status: string, size = 32): string {
+export function statusIconSvg(status: string, size = 40): string {
   const meta = STATUS_ICON_META[status] ?? DEFAULT_ICON_META;
   const glyph = GLYPHS[meta.icon].replaceAll("PUNCH_COLOR", meta.color);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24">
+  // Glyphs are drawn in the original 24x24 box; translating by (4,4) into
+  // a 32x32 canvas leaves 4 units of margin on every side for the shadow.
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 32 32">
     <defs>${SHADOW_FILTER}</defs>
-    <g filter="url(#shadow)">
-      <rect x="1" y="1" width="22" height="22" rx="6" fill="${meta.color}"/>
+    <g transform="translate(4,4)" filter="url(#shadow)">
+      <circle cx="12" cy="12" r="11" fill="${meta.color}"/>
       ${glyph}
     </g>
   </svg>`;
 }
 
-export function statusIconDataUri(status: string, size = 32): string {
+export function statusIconDataUri(status: string, size = 40): string {
   return `data:image/svg+xml;utf8,${encodeURIComponent(statusIconSvg(status, size))}`;
 }
 
 // For maplibre's map.addImage — decodes the same SVG into a bitmap.
-export function loadStatusIconImage(status: string, size = 48): Promise<HTMLImageElement> {
+export function loadStatusIconImage(status: string, size = 64): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image(size, size);
     img.onload = () => resolve(img);

@@ -103,9 +103,19 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
       tileSize: 256,
       attribution: "© Esri, Maxar, Earthstar Geographics",
     },
-    // Roads/labels overlay for satellite imagery — "Hybrid" is this plus
-    // the satellite layer both visible at once.
-    "hybrid-reference": {
+    // Roads/street names overlay for satellite imagery — "Hybrid" is this
+    // plus the satellite layer both visible at once. World_Transportation
+    // carries the actual road lines + street labels; Boundaries_and_Places
+    // adds city/place names and borders on top of that.
+    "hybrid-roads": {
+      type: "raster",
+      tiles: [
+        "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
+      ],
+      tileSize: 256,
+      attribution: "© Esri",
+    },
+    "hybrid-places": {
       type: "raster",
       tiles: [
         "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
@@ -118,7 +128,8 @@ const BASE_STYLE: maplibregl.StyleSpecification = {
     { id: "streets-base-layer", type: "raster", source: "streets-base", layout: { visibility: "visible" } },
     { id: "streets-reference-layer", type: "raster", source: "streets-reference", layout: { visibility: "visible" } },
     { id: "satellite-layer", type: "raster", source: "satellite", layout: { visibility: "none" } },
-    { id: "hybrid-reference-layer", type: "raster", source: "hybrid-reference", layout: { visibility: "none" } },
+    { id: "hybrid-roads-layer", type: "raster", source: "hybrid-roads", layout: { visibility: "none" } },
+    { id: "hybrid-places-layer", type: "raster", source: "hybrid-places", layout: { visibility: "none" } },
   ],
 };
 
@@ -190,7 +201,7 @@ export default function FieldMap() {
 
       // Slightly bigger pin icons on desktop — a phone screen stays tight
       // so more pins fit without crowding, but a desktop has room to spare.
-      const ICON_SIZE = window.innerWidth >= 1024 ? 0.85 : 0.55;
+      const ICON_SIZE = window.innerWidth >= 1024 ? 1.6 : 1.0;
 
       // Utility-territory overlay — added early so it sits under the pins.
       map.addSource("utility-territory", {
@@ -275,7 +286,7 @@ export default function FieldMap() {
         sourceBadgeKinds.map(async (kind) => {
           const id = `source-icon-${kind}`;
           if (!map.hasImage(id)) {
-            const img = await loadSourceBadgeImage(kind, 48);
+            const img = await loadSourceBadgeImage(kind, 64);
             map.addImage(id, img, { pixelRatio: 2 });
           }
         })
@@ -304,7 +315,7 @@ export default function FieldMap() {
         [...STATUS_OPTIONS, "__default__"].map(async (s) => {
           const id = `status-icon-${s}`;
           if (!map.hasImage(id)) {
-            const img = await loadStatusIconImage(s, 48);
+            const img = await loadStatusIconImage(s, 64);
             map.addImage(id, img, { pixelRatio: 2 });
           }
         })
@@ -465,7 +476,9 @@ export default function FieldMap() {
       // Hybrid is satellite imagery plus the roads/labels reference layer.
       const satelliteVisible = baseStyle === "satellite" || baseStyle === "hybrid" ? "visible" : "none";
       map.setLayoutProperty("satellite-layer", "visibility", satelliteVisible);
-      map.setLayoutProperty("hybrid-reference-layer", "visibility", baseStyle === "hybrid" ? "visible" : "none");
+      const hybridVisible = baseStyle === "hybrid" ? "visible" : "none";
+      map.setLayoutProperty("hybrid-roads-layer", "visibility", hybridVisible);
+      map.setLayoutProperty("hybrid-places-layer", "visibility", hybridVisible);
     };
     if (map.isStyleLoaded()) applyVisibility();
     else map.once("load", applyVisibility);
@@ -578,7 +591,7 @@ export default function FieldMap() {
       <img
         src="/provident-logo.png"
         alt="Provident LED"
-        className="absolute left-3 top-3 z-10 h-9 w-9 rounded-full object-cover shadow-lg"
+        className="absolute left-3 top-3 z-10 h-14 w-auto drop-shadow-lg"
       />
 
       <div className="absolute right-3 top-3 z-10 flex overflow-hidden rounded-lg shadow-lg">
