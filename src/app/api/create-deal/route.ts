@@ -11,6 +11,10 @@ const SALESRABBIT_SALESMAN_COL = "color_mm4v4hed"; // Lead Owner (status). Label
 const SALESRABBIT_NOTE_COL = "long_text_mm4v6hdv"; // Note
 const SALESRABBIT_STATUS_COL = "color_mm4vht3r"; // Status — see STATUS_OPTIONS in FieldMap.tsx for exact labels
 
+// New leads from the app land in their own group, separate from the
+// historical SalesRabbit import sitting in "Sales Rabbit".
+const SALESRABBIT_NEW_LEAD_GROUP = "group_mm6rvsa1"; // "Sales Map" group
+
 export async function POST(request: Request) {
   const { name, lat, lng, address, salesman, note, status } = await request.json();
 
@@ -34,7 +38,7 @@ export async function POST(request: Request) {
     columnValues[SALESRABBIT_STATUS_COL] = { label: status };
   }
 
-  const itemId = await createItem(board.id, name, columnValues);
+  const itemId = await createItem(board.id, name, columnValues, SALESRABBIT_NEW_LEAD_GROUP);
 
   return NextResponse.json({ ok: true, itemId });
 }

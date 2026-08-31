@@ -115,13 +115,16 @@ export async function fetchBoardItems(
 export async function createItem(
   boardId: number,
   itemName: string,
-  columnValues: Record<string, unknown>
+  columnValues: Record<string, unknown>,
+  groupId?: string
 ): Promise<string> {
   const escapedName = itemName.replace(/"/g, '\\"');
   const escapedValues = JSON.stringify(JSON.stringify(columnValues));
+  const groupArg = groupId ? `group_id: "${groupId}",` : "";
   const query = `mutation {
     create_item(
       board_id: ${boardId},
+      ${groupArg}
       item_name: "${escapedName}",
       column_values: ${escapedValues}
     ) { id }

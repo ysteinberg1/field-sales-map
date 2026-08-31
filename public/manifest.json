@@ -1,6 +1,6 @@
 {
-  "name": "Provident Field Map",
-  "short_name": "Field Map",
+  "name": "Sales Map",
+  "short_name": "Sales Map",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

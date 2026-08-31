@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { statusIconDataUri, loadStatusIconImage } from "@/lib/statusIcons";
+import { loadSourceBadgeImage } from "@/lib/sourceIcons";
+import type { SourceBadgeKind } from "@/lib/sourceIcons";
 
 // maplibre-gl resolves its worker script relative to its own bundled chunk's
 // import.meta.url, which doesn't exist once Next.js/webpack bundles it into
@@ -19,14 +22,9 @@ interface Pin {
   lat: number;
   lng: number;
   address: string | null;
+  status: string | null;
+  stage: string | null;
 }
-
-const BOARD_COLORS: Record<string, string> = {
-  deals: "#16a34a", // green — live deal
-  old_cashflow: "#2563eb", // blue — historical customer
-  pipedrive: "#7c3aed", // purple — historical lead
-  salesrabbit: "#f59e0b", // amber — canvassed lead
-};
 
 // Monday board IDs, for building "Open in Monday" links from the popup.
 const MONDAY_WORKSPACE_URL = "https://providentled-company.monday.com";
@@ -39,9 +37,20 @@ const BOARD_IDS: Record<string, number> = {
 
 const SALESMEN = ["Yoel", "Ari", "Chuny", "Shragie", "Neil", "JJ"];
 
+// Utility-territory overlay, exported from the SalesRabbit Google Earth
+// project (Provident_LED_-_Map_fixed.kmz) — a GroundOverlay PNG with a
+// fixed lat/lng bounding box. Off by default, same as the KMZ's own folder.
+const TERRITORY_IMAGE_URL = "/utility-territory.png";
+const TERRITORY_BOUNDS: [[number, number], [number, number], [number, number], [number, number]] = [
+  [-75.59305370948213, 41.40564881847246], // top-left (west, north)
+  [-73.86066137494016, 41.40564881847246], // top-right (east, north)
+  [-73.86066137494016, 38.880312151348846], // bottom-right (east, south)
+  [-75.59305370948213, 38.880312151348846], // bottom-left (west, south)
+];
+
 // Exact labels from the SalesRabbit board's Status column (color_mm4vht3r) —
-// order matches Monday's own index order. Icons per status are a separate
-// design pass, tracked for later.
+// order matches Monday's own index order. Per-status icon/color is defined
+// in src/lib/statusIcons.ts, keyed off these exact strings.
 const STATUS_OPTIONS = [
   "Area To Canvas",
   "Big Brand Corporate",
@@ -136,6 +145,8 @@ export default function FieldMap() {
   const [dealStatus, setDealStatus] = useState(STATUS_OPTIONS[0]);
   const [saving, setSaving] = useState(false);
   const [baseStyle, setBaseStyle] = useState<"streets" | "satellite">("streets");
+  const [showTerritory, setShowTerritory] = useState(false);
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("fsm_salesman");
@@ -165,6 +176,20 @@ export default function FieldMap() {
           }
         );
       }
+
+      // Utility-territory overlay — added early so it sits under the pins.
+      map.addSource("utility-territory", {
+        type: "image",
+        url: TERRITORY_IMAGE_URL,
+        coordinates: TERRITORY_BOUNDS,
+      });
+      map.addLayer({
+        id: "utility-territory-layer",
+        type: "raster",
+        source: "utility-territory",
+        paint: { "raster-opacity": 0.45 },
+        layout: { visibility: "none" },
+      });
 
       // Load cached pins
       let data: { pins: Pin[] };
@@ -224,28 +249,70 @@ export default function FieldMap() {
         paint: { "text-color": "#fff" },
       });
 
+      // Deals/Old Cashflow/Pipedrive don't carry a lead status, so they get
+      // a source badge instead: Pipedrive Archive items show a Pipedrive
+      // mark, everything else shows a Monday mark — except any item whose
+      // Stage/Status is exactly "Won", which shows a green check instead
+      // (confirmed as a real label on both boards' stage columns).
+      // SalesRabbit leads get their own status-icon symbol layer below.
+      const sourceBadgeKinds: SourceBadgeKind[] = ["pipedrive", "monday", "won"];
+      await Promise.all(
+        sourceBadgeKinds.map(async (kind) => {
+          const id = `source-icon-${kind}`;
+          if (!map.hasImage(id)) {
+            const img = await loadSourceBadgeImage(kind, 48);
+            map.addImage(id, img, { pixelRatio: 2 });
+          }
+        })
+      );
+
       map.addLayer({
         id: "unclustered-point",
-        type: "circle",
+        type: "symbol",
         source: "pins",
-        filter: ["!", ["has", "point_count"]],
-        paint: {
-          "circle-radius": 7,
-          "circle-color": [
-            "match",
-            ["get", "board"],
-            "deals", BOARD_COLORS.deals,
-            "old_cashflow", BOARD_COLORS.old_cashflow,
-            "pipedrive", BOARD_COLORS.pipedrive,
-            "salesrabbit", BOARD_COLORS.salesrabbit,
-            "#999",
+        filter: ["all", ["!", ["has", "point_count"]], ["!=", ["get", "board"], "salesrabbit"]],
+        layout: {
+          "icon-image": [
+            "case",
+            ["==", ["get", "stage"], "Won"], "source-icon-won",
+            ["==", ["get", "board"], "pipedrive"], "source-icon-pipedrive",
+            "source-icon-monday",
           ],
-          "circle-stroke-width": 2,
-          "circle-stroke-color": "#fff",
+          "icon-size": 0.55,
+          "icon-allow-overlap": true,
         },
       });
 
-      map.on("click", "unclustered-point", (e) => {
+      // One small flat-icon image per SalesRabbit status, matching
+      // SalesRabbit's own icon style (see src/lib/statusIcons.ts).
+      await Promise.all(
+        [...STATUS_OPTIONS, "__default__"].map(async (s) => {
+          const id = `status-icon-${s}`;
+          if (!map.hasImage(id)) {
+            const img = await loadStatusIconImage(s, 48);
+            map.addImage(id, img, { pixelRatio: 2 });
+          }
+        })
+      );
+
+      map.addLayer({
+        id: "salesrabbit-points",
+        type: "symbol",
+        source: "pins",
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "board"], "salesrabbit"]],
+        layout: {
+          "icon-image": [
+            "match",
+            ["get", "status"],
+            ...STATUS_OPTIONS.flatMap((s) => [s, `status-icon-${s}`]),
+            "status-icon-__default__",
+          ],
+          "icon-size": 0.55,
+          "icon-allow-overlap": true,
+        },
+      });
+
+      const showPinPopup = (e: maplibregl.MapLayerMouseEvent) => {
         const feature = e.features?.[0];
         if (!feature) return;
         const props = feature.properties as any;
@@ -285,7 +352,10 @@ export default function FieldMap() {
                </div>`
             );
           });
-      });
+      };
+
+      map.on("click", "unclustered-point", showPinPopup);
+      map.on("click", "salesrabbit-points", showPinPopup);
 
       // Drop a new pin: long-press on touch (a held-still press picks up the
       // address; a held-and-dragged press is a pan and must not), right-click
@@ -367,6 +437,17 @@ export default function FieldMap() {
     else map.once("load", applyVisibility);
   }, [baseStyle]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const applyVisibility = () => {
+      if (!map.getLayer("utility-territory-layer")) return;
+      map.setLayoutProperty("utility-territory-layer", "visibility", showTerritory ? "visible" : "none");
+    };
+    if (map.isStyleLoaded()) applyVisibility();
+    else map.once("load", applyVisibility);
+  }, [showTerritory]);
+
   const chooseSalesman = (name: string) => {
     window.localStorage.setItem("fsm_salesman", name);
     setSalesman(name);
@@ -414,6 +495,7 @@ export default function FieldMap() {
           lat: pendingPoint.lat,
           lng: pendingPoint.lng,
           address: pendingPoint.address,
+          status: dealStatus,
         },
       };
       pinsDataRef.current = {
@@ -478,6 +560,15 @@ export default function FieldMap() {
         </button>
       </div>
 
+      <button
+        onClick={() => setShowTerritory((v) => !v)}
+        className={`absolute right-3 top-14 z-10 rounded-lg px-3 py-2 text-sm font-medium shadow-lg ${
+          showTerritory ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
+        }`}
+      >
+        Territory
+      </button>
+
       {pendingPoint && (
         <div className="absolute inset-x-0 bottom-0 z-10 rounded-t-2xl bg-white p-4 shadow-lg sm:inset-x-auto sm:bottom-3 sm:left-3 sm:w-80 sm:rounded-2xl">
           <div className="mb-1 text-sm text-neutral-500">New lead — {salesman}</div>
@@ -502,17 +593,40 @@ export default function FieldMap() {
             value={dealNote}
             onChange={(e) => setDealNote(e.target.value)}
           />
-          <select
-            className="mb-3 w-full rounded border px-3 py-2 text-sm text-neutral-700"
-            value={dealStatus}
-            onChange={(e) => setDealStatus(e.target.value)}
-          >
-            {STATUS_OPTIONS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
+          <div className="relative mb-3">
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded border px-3 py-2 text-sm text-neutral-700"
+              onClick={() => setStatusMenuOpen((v) => !v)}
+            >
+              <img src={statusIconDataUri(dealStatus)} alt="" className="h-5 w-5 rounded" />
+              <span className="flex-1 text-left">{dealStatus}</span>
+              <span className="text-neutral-400">▾</span>
+            </button>
+            {statusMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setStatusMenuOpen(false)} />
+                <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded border bg-white shadow-lg">
+                  {STATUS_OPTIONS.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-neutral-100 ${
+                        s === dealStatus ? "bg-neutral-50 font-medium" : ""
+                      }`}
+                      onClick={() => {
+                        setDealStatus(s);
+                        setStatusMenuOpen(false);
+                      }}
+                    >
+                      <img src={statusIconDataUri(s)} alt="" className="h-5 w-5 rounded" />
+                      <span>{s}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <div className="flex gap-2">
             <button className="flex-1 rounded bg-neutral-200 py-2" onClick={cancelPendingPoint}>
               Cancel

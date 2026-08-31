@@ -2,10 +2,10 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Field Map",
+  title: "Sales Map",
   description: "Provident LED field sales map",
   manifest: "/manifest.json",
-  appleWebApp: { capable: true, statusBarStyle: "default", title: "Field Map" },
+  appleWebApp: { capable: true, statusBarStyle: "default", title: "Sales Map" },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
