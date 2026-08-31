@@ -64,6 +64,8 @@ export async function POST(request: Request) {
           lat,
           lng,
           address: parsed.address ?? null,
+          status: null,
+          stage: null,
         };
         const key = normalizeAddress(newPin.address) ?? `${lat.toFixed(4)},${lng.toFixed(4)}`;
         const clash = pins.find(

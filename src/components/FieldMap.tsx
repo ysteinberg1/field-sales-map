@@ -301,12 +301,16 @@ export default function FieldMap() {
         source: "pins",
         filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "board"], "salesrabbit"]],
         layout: {
+          // maplibre's StyleSpecification types expect a fixed-length "match"
+          // tuple, which a dynamically-spread expression can't satisfy
+          // statically — the shape (condition/output pairs + fallback) is
+          // correct at runtime, so this is a deliberate escape hatch.
           "icon-image": [
             "match",
             ["get", "status"],
             ...STATUS_OPTIONS.flatMap((s) => [s, `status-icon-${s}`]),
             "status-icon-__default__",
-          ],
+          ] as unknown as maplibregl.DataDrivenPropertyValueSpecification<string>,
           "icon-size": 0.55,
           "icon-allow-overlap": true,
         },
