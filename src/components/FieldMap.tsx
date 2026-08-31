@@ -99,6 +99,9 @@ const nearbyCache = new Map<string, { name: string; lat: number; lng: number; ad
 
 function iconUrlForPin(p: Pin): string {
   if (p.board === "salesrabbit") return statusIconDataUri(p.status ?? "__unmatched__");
+  // Old Cashflow only ever holds historical, already-closed customers — it
+  // doesn't even track a stage/status, so it's always effectively "Won".
+  if (p.board === "old_cashflow") return sourceBadgeDataUri("won");
   if (p.stage === "Won") return sourceBadgeDataUri("won");
   if (p.board === "pipedrive") return sourceBadgeDataUri("pipedrive");
   return sourceBadgeDataUri("monday");
@@ -288,7 +291,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                 url:
                   "data:image/svg+xml;utf8," +
                   encodeURIComponent(
-                    `<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52"><circle cx="26" cy="26" r="22" fill="#dc2626" fill-opacity="0.85"/><text x="26" y="31" font-family="sans-serif" font-size="14" fill="white" text-anchor="middle">${count}</text></svg>`
+                    `<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52"><circle cx="26" cy="26" r="22" fill="#3f3f46" fill-opacity="0.8"/><text x="26" y="31" font-family="sans-serif" font-size="14" fill="white" text-anchor="middle">${count}</text></svg>`
                   ),
                 scaledSize: new google.maps.Size(52, 52),
               },
@@ -585,14 +588,14 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       <img
         src="/provident-logo.png"
         alt="Provident LED"
-        className="absolute left-3 top-3 z-10 h-14 w-auto drop-shadow-lg"
+        className="absolute bottom-3 left-3 z-10 h-14 w-auto drop-shadow-lg"
       />
 
       <input
         ref={searchInputRef}
         type="text"
         placeholder="Search an address or business…"
-        className="absolute left-20 right-3 top-3 z-10 rounded-lg border-0 px-3 py-2 text-sm shadow-lg sm:left-20 sm:right-auto sm:w-72"
+        className="absolute left-3 right-3 top-3 z-10 rounded-lg border-0 bg-white px-3 py-2 text-sm text-neutral-900 shadow-lg placeholder:text-neutral-400 sm:right-auto sm:w-72"
       />
 
       <div className="absolute right-3 top-16 z-10 flex overflow-hidden rounded-lg shadow-lg sm:top-3">
