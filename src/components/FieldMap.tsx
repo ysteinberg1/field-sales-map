@@ -201,7 +201,7 @@ export default function FieldMap() {
 
       // Slightly bigger pin icons on desktop — a phone screen stays tight
       // so more pins fit without crowding, but a desktop has room to spare.
-      const ICON_SIZE = window.innerWidth >= 1024 ? 1.15 : 0.8;
+      const ICON_SIZE = window.innerWidth >= 1024 ? 0.9 : 0.65;
 
       // Utility-territory overlay — added early so it sits under the pins.
       map.addSource("utility-territory", {
