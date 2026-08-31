@@ -120,6 +120,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const nearbyMarkersRef = useRef<google.maps.Marker[]>([]);
   const nearbyDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showNearbyRef = useRef(false);
+  const runNearbySearchRef = useRef<(() => void) | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const [salesman, setSalesman] = useState<string | null>(null);
@@ -149,6 +150,11 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       nearbyMarkersRef.current.forEach((m) => m.setMap(null));
       nearbyMarkersRef.current = [];
       if (nearbyDebounceRef.current) clearTimeout(nearbyDebounceRef.current);
+    } else {
+      // Search right away — an "idle" event only fires on the *next*
+      // pan/zoom, so without this, switching the toggle on while the map
+      // is already sitting still would never search at all.
+      runNearbySearchRef.current?.();
     }
   }, [showNearby]);
 
@@ -389,12 +395,14 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         if (e.latLng) void openNewLeadPanel(e.latLng);
       });
 
-      // Nearby-business search: fires only after the view holds still for a
-      // few seconds, and only if the toggle is on. Cached per rounded
-      // center+zoom so revisiting a spot doesn't re-query.
-      map.addListener("idle", () => {
-        if (nearbyDebounceRef.current) clearTimeout(nearbyDebounceRef.current);
-        nearbyDebounceRef.current = setTimeout(async () => {
+      // Nearby-business search: fires after the view holds still for a few
+      // seconds, and only if the toggle is on. Cached per rounded
+      // center+zoom so revisiting a spot doesn't re-query. Also runs
+      // immediately when the toggle is switched on (see runNearbySearchRef
+      // below) — an "idle" event only fires on the *next* pan/zoom, so
+      // without this, turning the toggle on while the map sits still would
+      // never search at all.
+      const runNearbySearch = async () => {
           if (!showNearbyRef.current) return;
           const center = map.getCenter();
           const zoom = map.getZoom();
@@ -458,7 +466,12 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             });
             return marker;
           });
-        }, NEARBY_DEBOUNCE_MS);
+      };
+      runNearbySearchRef.current = runNearbySearch;
+
+      map.addListener("idle", () => {
+        if (nearbyDebounceRef.current) clearTimeout(nearbyDebounceRef.current);
+        nearbyDebounceRef.current = setTimeout(runNearbySearch, NEARBY_DEBOUNCE_MS);
       });
     })();
 
