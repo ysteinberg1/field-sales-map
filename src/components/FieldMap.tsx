@@ -137,7 +137,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const [dealNote, setDealNote] = useState("");
   const [dealStatus, setDealStatus] = useState(STATUS_OPTIONS[0]);
   const [saving, setSaving] = useState(false);
-  const [mapType, setMapType] = useState<"roadmap" | "satellite" | "hybrid">("roadmap");
+  const [mapType, setMapType] = useState<"roadmap" | "satellite" | "hybrid">("hybrid");
   const [showTerritory, setShowTerritory] = useState(false);
   const [showNearby, setShowNearby] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
@@ -184,7 +184,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       const map = new GMap(mapContainer.current, {
         center: { lat: 40.85, lng: -74.15 }, // NJ/NY fallback
         zoom: 10,
-        mapTypeId: "roadmap",
+        mapTypeId: "hybrid",
         mapTypeControl: false,
         streetViewControl: false,
         fullscreenControl: false,
@@ -279,13 +279,20 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             },
           });
           marker.addListener("click", () => showPinInfo(pin, marker));
+          // Right-clicking directly on a pin (as opposed to empty map) would
+          // otherwise be swallowed by the marker instead of reaching the
+          // map's own "rightclick" listener below — forward it manually so
+          // new-lead creation works even on a packed, cluster-heavy map.
+          marker.addListener("rightclick", () => {
+            void openNewLeadPanel(new google.maps.LatLng(pin.lat, pin.lng));
+          });
           markersRef.current.set(`${pin.board}:${pin.itemId}`, marker);
           return marker;
         });
 
         const renderer: ClusterRenderer = {
-          render: ({ count, position }) =>
-            new Marker({
+          render: ({ count, position }) => {
+            const clusterMarker = new Marker({
               position,
               icon: {
                 url:
@@ -296,7 +303,14 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                 scaledSize: new google.maps.Size(52, 52),
               },
               zIndex: 1000 + count,
-            }),
+            });
+            // Same forwarding as individual pins — right-clicking a cluster
+            // bubble should still let you drop a new lead at that spot.
+            clusterMarker.addListener("rightclick", () => {
+              void openNewLeadPanel(position);
+            });
+            return clusterMarker;
+          },
         };
 
         clustererRef.current = new MarkerClusterer({ map, markers, renderer });
