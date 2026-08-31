@@ -201,7 +201,7 @@ export default function FieldMap() {
 
       // Slightly bigger pin icons on desktop — a phone screen stays tight
       // so more pins fit without crowding, but a desktop has room to spare.
-      const ICON_SIZE = window.innerWidth >= 1024 ? 1.6 : 1.0;
+      const ICON_SIZE = window.innerWidth >= 1024 ? 1.15 : 0.8;
 
       // Utility-territory overlay — added early so it sits under the pins.
       map.addSource("utility-territory", {
@@ -286,7 +286,7 @@ export default function FieldMap() {
         sourceBadgeKinds.map(async (kind) => {
           const id = `source-icon-${kind}`;
           if (!map.hasImage(id)) {
-            const img = await loadSourceBadgeImage(kind, 64);
+            const img = await loadSourceBadgeImage(kind);
             map.addImage(id, img, { pixelRatio: 2 });
           }
         })
@@ -315,7 +315,7 @@ export default function FieldMap() {
         [...STATUS_OPTIONS, "__default__"].map(async (s) => {
           const id = `status-icon-${s}`;
           if (!map.hasImage(id)) {
-            const img = await loadStatusIconImage(s, 64);
+            const img = await loadStatusIconImage(s);
             map.addImage(id, img, { pixelRatio: 2 });
           }
         })
