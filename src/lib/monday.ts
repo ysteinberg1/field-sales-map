@@ -11,14 +11,15 @@ export interface BoardConfig {
   tier: number; // lower tier wins when the same address appears on multiple boards
 }
 
-// Tier precedence: Deals > Old Cashflow > Pipedrive > SalesRabbit
-// Pipedrive and SalesRabbit use their "Dedup Location" columns (cleaned
-// coordinates from the earlier dedup pass), not their raw Location columns.
+// Every board uses its raw Location column — pins are no longer collapsed
+// across boards by address (see pins.ts), so the "Dedup Location" columns
+// (cleaned coordinates from an earlier dedup pass) aren't needed for hiding
+// duplicates anymore. `tier` is kept only as metadata on the Pin.
 export const BOARDS: Record<BoardKey, BoardConfig> = {
   deals: { id: 1558281108, locationColumnId: "location_mkv04x3y", tier: 0 },
   old_cashflow: { id: 5102612766, locationColumnId: "location_mm6gzddh", tier: 1 },
-  pipedrive: { id: 5102614839, locationColumnId: "location_mm6kpjx2", tier: 2 },
-  salesrabbit: { id: 5099562913, locationColumnId: "location_mm6kf638", tier: 3 },
+  pipedrive: { id: 5102614839, locationColumnId: "location_mm6g6z07", tier: 2 },
+  salesrabbit: { id: 5099562913, locationColumnId: "location_mm6g8ayt", tier: 3 },
 };
 
 // Columns to show in the tap-to-view popup, per board — confirmed with Yoel.

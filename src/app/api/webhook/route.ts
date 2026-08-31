@@ -5,15 +5,6 @@ import { Pin } from "@/lib/pins";
 
 const BLOB_PATHNAME = "pins.json";
 
-function normalizeAddress(addr: string | null | undefined): string | null {
-  if (!addr) return null;
-  let a = addr.toLowerCase();
-  a = a.replace(/[^\w\s]/g, "");
-  a = a.replace(/\b(suite|ste|unit|apt|building|bldg)\s*\w*\b/g, "");
-  a = a.replace(/\s+/g, " ").trim();
-  return a || null;
-}
-
 export async function POST(request: Request) {
   const body = await request.json();
 
@@ -67,14 +58,7 @@ export async function POST(request: Request) {
           status: null,
           stage: null,
         };
-        const key = normalizeAddress(newPin.address) ?? `${lat.toFixed(4)},${lng.toFixed(4)}`;
-        const clash = pins.find(
-          (p) => (normalizeAddress(p.address) ?? `${p.lat.toFixed(4)},${p.lng.toFixed(4)}`) === key
-        );
-        if (!clash || newPin.tier < clash.tier) {
-          if (clash) pins = pins.filter((p) => p !== clash);
-          pins.push(newPin);
-        }
+        pins.push(newPin);
       }
     } catch {
       // no valid location — item removed from the map
