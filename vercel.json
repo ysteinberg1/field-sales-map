@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/resync",
       "schedule": "0 6 * * 0"
+    },
+    {
+      "path": "/api/cron/quick-resync",
+      "schedule": "0 4 * * *"
     }
   ]
 }
