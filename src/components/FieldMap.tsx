@@ -542,9 +542,9 @@ export default function FieldMap() {
       <div ref={mapContainer} className="h-full w-full" />
 
       <img
-        src="/provident-logo.svg"
+        src="/provident-logo.png"
         alt="Provident LED"
-        className="absolute left-3 top-3 z-10 h-9 w-9 rounded-lg shadow-lg"
+        className="absolute left-3 top-3 z-10 h-9 w-auto rounded-lg shadow-lg"
       />
 
       <div className="absolute right-3 top-3 z-10 flex overflow-hidden rounded-lg shadow-lg">
