@@ -1,4 +1,4 @@
-import { BOARDS, BoardKey, fetchBoardItems, fetchGroupItems, MondayItem } from "./monday";
+import { BOARDS, BoardKey, fetchBoardItems, MondayItem } from "./monday";
 
 export interface Pin {
   board: BoardKey;
@@ -24,11 +24,6 @@ const STAGE_COLUMN: Partial<Record<BoardKey, string>> = {
   pipedrive: "status",
 };
 
-// "Active Deals" group on the Deals board — the only group anyone still
-// adds to day-to-day (Old Cashflow/Pipedrive Archive/SalesRabbit are frozen
-// except for map-created leads, and "Closed Won"/"Lost" on Deals don't
-// change often). This id feeds the nightly quick-check.
-export const ACTIVE_DEALS_GROUP_ID = "topics";
 
 function normalizeAddress(addr: string | null | undefined): string | null {
   if (!addr) return null;
@@ -115,17 +110,31 @@ export async function buildPinDataset(): Promise<Pin[]> {
   return dedupePins(results.flat());
 }
 
-// Nightly quick check: only re-fetches the "Active Deals" group on the
-// Deals board (new deals show up here first, and it's a fraction of the
-// board's items) and patches those into the previously-cached full
-// dataset — so Old Cashflow/Pipedrive/SalesRabbit and Deals' own
-// Won/Lost groups are left exactly as the last full sync found them,
-// not wiped out by a partial fetch.
-export async function buildQuickDealsPatch(existingPins: Pin[]): Promise<Pin[]> {
-  const items = await fetchGroupItems(BOARDS.deals.id, ACTIVE_DEALS_GROUP_ID, columnIdsFor("deals"));
+// Nightly job: re-fetches the *entire* Deals board (every group — Active,
+// Closed Won, Lost) and replaces the "deals" slice of the cached dataset
+// wholesale, leaving Old Cashflow/Pipedrive Archive/SalesRabbit exactly as
+// the last sync found them. Those three boards are frozen (nothing gets
+// added to them through Monday anymore — only through the app, and
+// create-deal already writes straight into the shared cache for that, see
+// upsertPin below), so there's nothing on them left to catch by polling.
+// A full-board replace (not a merge-by-id) also correctly drops any Deals
+// item that got deleted or whose address changed enough to dedupe
+// differently, which a group-scoped patch couldn't.
+export async function buildDealsPatch(existingPins: Pin[]): Promise<Pin[]> {
+  const items = await fetchBoardItems(BOARDS.deals.id, columnIdsFor("deals"));
   const freshDealsPins = items.map((item) => itemToPin(item, "deals")).filter((p): p is Pin => p !== null);
-  const freshIds = new Set(freshDealsPins.map((p) => p.itemId));
 
-  const carriedOver = existingPins.filter((p) => !(p.board === "deals" && freshIds.has(p.itemId)));
-  return dedupePins([...carriedOver, ...freshDealsPins]);
+  const nonDeals = existingPins.filter((p) => p.board !== "deals");
+  return dedupePins([...nonDeals, ...freshDealsPins]);
+}
+
+// Used by /api/create-deal so a newly created SalesRabbit lead is visible
+// to every salesman immediately, not just the one who created it (that
+// part already happens client-side) — no need to wait for any scheduled
+// sync. Dedup still applies: if this address is already covered by a
+// higher-tier pin, the new one won't win, matching how a real sync would
+// resolve it.
+export function upsertPin(existingPins: Pin[], newPin: Pin): Pin[] {
+  const withoutThisItem = existingPins.filter((p) => !(p.board === newPin.board && p.itemId === newPin.itemId));
+  return dedupePins([...withoutThisItem, newPin]);
 }

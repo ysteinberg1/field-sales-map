@@ -112,44 +112,6 @@ export async function fetchBoardItems(
   return items;
 }
 
-// Same as fetchBoardItems but scoped to one group — used by the nightly
-// quick-check so it only pulls "Active Deals" instead of the whole board.
-export async function fetchGroupItems(
-  boardId: number,
-  groupId: string,
-  columnIds: string[]
-): Promise<MondayItem[]> {
-  const items: MondayItem[] = [];
-  let cursor: string | null = null;
-  const colIdsStr = columnIds.map((c) => `"${c}"`).join(",");
-
-  while (true) {
-    const query: string = cursor
-      ? `{ next_items_page(cursor: "${cursor}", limit: 500) {
-           cursor
-           items { id name column_values(ids: [${colIdsStr}]) { id text value } }
-         } }`
-      : `{ boards(ids: [${boardId}]) {
-           groups(ids: ["${groupId}"]) {
-             items_page(limit: 500) {
-               cursor
-               items { id name column_values(ids: [${colIdsStr}]) { id text value } }
-             }
-           }
-         } }`;
-
-    const data = await mondayGraphQL<any>(query);
-    const page: { cursor: string | null; items: MondayItem[] } = cursor
-      ? data.next_items_page
-      : data.boards[0].groups[0].items_page;
-    items.push(...page.items);
-    cursor = page.cursor;
-    if (!cursor) break;
-  }
-
-  return items;
-}
-
 export async function createItem(
   boardId: number,
   itemName: string,
