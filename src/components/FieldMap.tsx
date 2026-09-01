@@ -165,7 +165,6 @@ const ROADMAP_STYLE: google.maps.MapTypeStyle[] = [
   { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#d8ecd4" }] },
   { featureType: "water", elementType: "geometry", stylers: [{ color: "#cfe3ea" }] },
   { featureType: "transit", stylers: [{ visibility: "off" }] },
-  { featureType: "poi.business", stylers: [{ visibility: "off" }] },
 ];
 
 // Nearby-business search: fires this long after the map view stops
