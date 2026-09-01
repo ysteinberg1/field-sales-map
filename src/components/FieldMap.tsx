@@ -342,6 +342,14 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       };
 
       const showPinInfo = (pin: Pin, marker: google.maps.Marker) => {
+        // Only one popup open at a time — opening a pin's details closes
+        // any in-progress "new lead" panel instead of leaving both open.
+        newLeadInfoWindow.close();
+        pendingMarkerRef.current?.setMap(null);
+        pendingMarkerRef.current = null;
+        setNewLeadPanelContainer(null);
+        setPendingPoint(null);
+
         // Center the map on the pin and enlarge its icon slightly while
         // the popup is open, so the tapped pin is unmistakable.
         clearActiveMarkerHighlight();
@@ -366,7 +374,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         const boardLabel = BOARD_LABELS[pin.board] ?? pin.board;
 
         infoWindow.setContent(
-          `<div style="min-width:230px;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px">
+          `<div style="min-width:230px;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px;font-weight:400">
              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
                <div style="display:flex;align-items:center;gap:8px;min-width:0">
                  <img src="${iconUrl}" width="30" height="30" style="flex-shrink:0" />
@@ -427,7 +435,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                 : `<span style="font-size:12px;color:#a3a3a3;font-style:italic">Synced from Monday</span>`;
 
             infoWindow.setContent(
-              `<div style="min-width:230px;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px">
+              `<div style="min-width:230px;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px;font-weight:400">
                  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
                    <div style="display:flex;align-items:center;gap:8px;min-width:0">
                      <img src="${iconUrl}" width="30" height="30" style="flex-shrink:0" />
@@ -501,9 +509,41 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           const bucket = SALESMAN_FILTERS.includes(pin.salesman) ? pin.salesman : "Other";
           return visibleSalesmenRef.current.has(bucket);
         });
+
+        // Pins from different boards at the same real-world address often
+        // geocode to the EXACT same lat/lng now that cross-board dedup is
+        // gone. A cluster algorithm can never split points at true-zero
+        // distance apart, so those would stay one gray bubble forever no
+        // matter how far you zoom in. Nudge each duplicate a few meters
+        // apart in a small circle around the real point so they can
+        // actually separate at high zoom, while still reading as
+        // "basically the same spot" at any normal zoom.
+        const coordGroups = new Map<string, Pin[]>();
+        for (const pin of visible) {
+          const key = `${pin.lat.toFixed(6)},${pin.lng.toFixed(6)}`;
+          const group = coordGroups.get(key);
+          if (group) group.push(pin);
+          else coordGroups.set(key, [pin]);
+        }
+        const renderPosition = new Map<Pin, { lat: number; lng: number }>();
+        for (const group of coordGroups.values()) {
+          if (group.length === 1) {
+            renderPosition.set(group[0], { lat: group[0].lat, lng: group[0].lng });
+            continue;
+          }
+          const JITTER_DEGREES = 0.00004; // ~4m
+          group.forEach((pin, i) => {
+            const angle = (2 * Math.PI * i) / group.length;
+            renderPosition.set(pin, {
+              lat: pin.lat + JITTER_DEGREES * Math.cos(angle),
+              lng: pin.lng + JITTER_DEGREES * Math.sin(angle),
+            });
+          });
+        }
+
         const markers = visible.map((pin) => {
           const marker = new Marker({
-            position: { lat: pin.lat, lng: pin.lng },
+            position: renderPosition.get(pin)!,
             icon: {
               url: iconUrlForPin(pin),
               scaledSize: new google.maps.Size(ICON_PX, ICON_PX),
@@ -595,6 +635,11 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       // hand jitter alone drifts past the threshold. Google's map fires
       // mousedown/mouseup/dragstart uniformly for touch and mouse input.
       const openNewLeadPanel = async (latLng: google.maps.LatLng) => {
+        // Only one popup open at a time — creating a new lead closes any
+        // pin details popup instead of leaving both open.
+        infoWindow.close();
+        clearActiveMarkerHighlight();
+
         const lat = latLng.lat();
         const lng = latLng.lng();
         map.panTo(latLng);
@@ -916,7 +961,10 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       {pendingPoint &&
         newLeadPanelContainer &&
         createPortal(
-          <div className="w-72 max-w-[80vw] border-l-4 border-green-600 bg-white p-3 pl-2.5">
+          <div
+            className="w-72 max-w-[80vw] border-l-4 border-green-600 bg-white p-3 pl-2.5"
+            style={{ fontWeight: 400 }}
+          >
             <div className="mb-3 flex items-center justify-between">
               <div className="text-sm font-medium text-neutral-500">New lead — {salesman}</div>
               <button
@@ -937,14 +985,14 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             />
             <input
               className="mb-3 w-full rounded border px-3 py-2"
-              placeholder="Business / customer name (optional — defaults to the street address)"
+              placeholder="Business / customer name — defaults to the street address"
               value={dealName}
               onChange={(e) => setDealName(e.target.value)}
               autoFocus
             />
             <textarea
               className="mb-3 w-full rounded border px-3 py-2 text-sm"
-              placeholder="Note (optional)"
+              placeholder="Note"
               rows={2}
               value={dealNote}
               onChange={(e) => setDealNote(e.target.value)}
@@ -962,7 +1010,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
               {statusMenuOpen && (
                 <>
                   <div className="fixed inset-0 z-10" onClick={() => setStatusMenuOpen(false)} />
-                  <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded border bg-white shadow-lg">
+                  <div className="fsm-scroll absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded border bg-white shadow-lg">
                     {STATUS_OPTIONS.map((s) => (
                       <button
                         key={s}

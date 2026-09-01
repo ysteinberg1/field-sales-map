@@ -32,6 +32,13 @@ body {
 .gm-ui-hover-effect {
   display: none !important;
 }
+/* .gm-style-iw-chr is the row that WRAPS the close button above — hiding
+   just the button (.gm-ui-hover-effect) left this row's own 17px of
+   reserved height behind, showing as a blank gap between our card's top
+   and its own accent border. Removing the whole row closes that gap. */
+.gm-style-iw-chr {
+  display: none !important;
+}
 .gm-style-iw-c,
 .gm-style-iw-d {
   padding: 0 !important;
@@ -47,3 +54,19 @@ body {
 .gm-style-iw-tail::after {
   display: none !important;
 }
+/* The status dropdown's scroll list — Chrome/Edge on Windows render
+   little up/down arrow buttons at each end of a scrollbar by default,
+   which showed up as a stray white triangle above the list. */
+.fsm-scroll::-webkit-scrollbar-button {
+  display: none;
+  height: 0;
+}
+
+/* Google forces font-weight:300 on all InfoWindow content via
+   `.gm-style .gm-style-iw { font-weight: 300 }` — a higher-specificity
+   rule than our own Tailwind utility classes, which silently made body
+   text look thin and faint even where we asked for normal/medium
+   weight. Fixed at the source (inline `style={{fontWeight}}` on each
+   card's own root, in FieldMap.tsx) rather than here, since inline
+   styles are the only thing guaranteed to beat it without also
+   clobbering intentionally-bold text inside. */
