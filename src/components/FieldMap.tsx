@@ -531,7 +531,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             renderPosition.set(group[0], { lat: group[0].lat, lng: group[0].lng });
             continue;
           }
-          const JITTER_DEGREES = 0.00004; // ~4m
+          const JITTER_DEGREES = 0.00009; // ~9m
           group.forEach((pin, i) => {
             const angle = (2 * Math.PI * i) / group.length;
             renderPosition.set(pin, {
@@ -606,7 +606,14 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           map,
           markers,
           renderer,
-          algorithm: new SuperClusterAlgorithm({ radius: 170, maxZoom: 19 }),
+          // maxZoom is where clustering stops entirely and every pin
+          // renders individually, regardless of pixel distance — this was
+          // 19 (near the top of the zoom range), so exact-duplicate pins
+          // stayed clustered until you were nearly maxed out. Lower cutoff
+          // means individual pins (including duplicates, now separated by
+          // the jitter above) show up at a normal "zoomed into a
+          // neighborhood" level instead.
+          algorithm: new SuperClusterAlgorithm({ radius: 170, maxZoom: 16 }),
         });
       };
       renderPinsRef.current = renderPins;
