@@ -617,7 +617,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           map,
           markers,
           renderer,
-          algorithm: new SuperClusterAlgorithm({ radius: 300, maxZoom: 19 }),
+          algorithm: new SuperClusterAlgorithm({ radius: 170, maxZoom: 19 }),
         });
       };
       renderPinsRef.current = renderPins;
