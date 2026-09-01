@@ -36,6 +36,7 @@ export const DETAIL_COLUMNS: Record<BoardKey, string[]> = {
     "color_mm6dw3r2", // Salesman
     "date4", // Deal Created
     "date_mm6d9hje", // Won Date
+    "text_mm6ddgyv", // Address
   ],
   old_cashflow: [
     "text_mm6dbpxy", // Address

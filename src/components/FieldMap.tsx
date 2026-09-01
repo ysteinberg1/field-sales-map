@@ -138,7 +138,18 @@ const FIELD_LABELS: Record<string, string> = {
   color_mkv0qrwq: "Salesman",
   deal_stage: "Stage",
   long_text_mm6khzqt: "Sales Notes",
+  text_mm6ddgyv: "Address",
 };
+
+// Column ids whose raw Monday value is a full mailing address — trimmed
+// for display down to "street, city" (drop state/zip/USA) since the map
+// popup is small and the salesman already knows what state they're in.
+const ADDRESS_COLUMNS = new Set(["text_mm6dbpxy", "text_mm6ddgyv"]);
+
+function simplifyAddress(raw: string): string {
+  const parts = raw.split(",").map((p) => p.trim());
+  return parts.slice(0, 2).join(", ");
+}
 
 // A soft white/gray/green look (Esri's Light Gray Canvas, matched here) —
 // only applies to ROADMAP; Google ignores `styles` for SATELLITE/HYBRID,
@@ -386,13 +397,17 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         // the popup is open, so the tapped pin is unmistakable.
         clearActiveMarkerHighlight();
         map.panTo(marker.getPosition()!);
-        const currentIcon = marker.getIcon() as google.maps.Icon;
         activeMarker = marker;
-        activeMarkerIcon = currentIcon;
-        const baseSize = currentIcon.scaledSize?.width ?? ICON_PX;
-        const bigSize = baseSize * 1.3;
+        activeMarkerIcon = marker.getIcon() as google.maps.Icon;
+        const iconUrl = iconUrlForPin(pin);
+        // Build a fresh icon rather than reusing/spreading the one read
+        // back from the marker — getIcon() can return a `size` field
+        // resolved from the ORIGINAL small icon, and Google uses `size`
+        // as a source-image crop rect independent of `scaledSize`, which
+        // was cropping the bottom-right off the enlarged version.
+        const bigSize = ICON_PX * 1.3;
         marker.setIcon({
-          ...currentIcon,
+          url: iconUrl,
           scaledSize: new google.maps.Size(bigSize, bigSize),
           anchor: new google.maps.Point(bigSize / 2, bigSize / 2),
         });
@@ -400,10 +415,9 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
 
         const meta = BOARD_META[pin.board];
         const boardLabel = BOARD_LABELS[pin.board] ?? pin.board;
-        const iconUrl = iconUrlForPin(pin);
 
         infoWindow.setContent(
-          `<div style="min-width:230px;border-radius:8px;overflow:hidden;background:white;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px">
+          `<div style="min-width:230px;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px">
              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
                <div style="display:flex;align-items:center;gap:8px;min-width:0">
                  <img src="${iconUrl}" width="30" height="30" style="flex-shrink:0" />
@@ -452,7 +466,10 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
 
             const otherRows = Object.entries(details)
               .filter(([k, v]) => v && !excluded.has(k))
-              .map(([k, v]) => `<div><span style="color:#a3a3a3">${FIELD_LABELS[k] ?? k}:</span> ${v}</div>`)
+              .map(([k, v]) => {
+                const value = ADDRESS_COLUMNS.has(k) ? simplifyAddress(v as string) : v;
+                return `<div><span style="color:#a3a3a3">${FIELD_LABELS[k] ?? k}:</span> ${value}</div>`;
+              })
               .join("");
 
             const deleteBtn =
@@ -461,7 +478,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                 : `<span style="font-size:12px;color:#a3a3a3;font-style:italic">Synced from Monday</span>`;
 
             infoWindow.setContent(
-              `<div style="min-width:230px;border-radius:8px;overflow:hidden;background:white;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px">
+              `<div style="min-width:230px;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px">
                  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
                    <div style="display:flex;align-items:center;gap:8px;min-width:0">
                      <img src="${iconUrl}" width="30" height="30" style="flex-shrink:0" />
@@ -562,10 +579,10 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             // outside its edge — not a second, much-larger halo circle.
             // Kept deliberately compact: this renders hundreds of times
             // on screen at once, so anything oversized compounds fast.
-            const core = Math.min(62, Math.max(26, 30 + 12 * Math.log10(count + 1)));
-            const ribbon = 3;
-            const outer = core + ribbon * 2 + 4;
-            const fontSize = Math.min(15, Math.max(10, 9 + 2.5 * Math.log10(count + 1)));
+            const core = Math.min(44, Math.max(16, 20 + 8 * Math.log10(count + 1)));
+            const ribbon = 2;
+            const outer = core + ribbon * 2 + 3;
+            const fontSize = Math.min(13, Math.max(9, 8 + 2 * Math.log10(count + 1)));
             const half = outer / 2;
             const clusterMarker = new Marker({
               position,
@@ -600,7 +617,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           map,
           markers,
           renderer,
-          algorithm: new SuperClusterAlgorithm({ radius: 140, maxZoom: 17 }),
+          algorithm: new SuperClusterAlgorithm({ radius: 300, maxZoom: 19 }),
         });
       };
       renderPinsRef.current = renderPins;
@@ -632,6 +649,14 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         const lat = latLng.lat();
         const lng = latLng.lng();
         map.panTo(latLng);
+        // panTo animates over several hundred ms — positioning the panel
+        // immediately (the [pendingPoint] effect does this too, as a
+        // same-view fallback) captures a mid-pan frame and leaves it
+        // stranded wherever that frame happened to be. Redraw again once
+        // the pan actually finishes.
+        google.maps.event.addListenerOnce(map, "idle", () => {
+          pendingPanelOverlayRef.current?.draw();
+        });
         pendingMarkerRef.current?.setMap(null);
         pendingMarkerRef.current = new Marker({
           position: { lat, lng },
@@ -988,32 +1013,14 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
               <div className="px-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
                 Layers
               </div>
-              <button
-                onClick={() => setShowTerritory((v) => !v)}
-                className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50"
-              >
+              <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50">
+                <input type="checkbox" checked={showTerritory} onChange={() => setShowTerritory((v) => !v)} />
                 Territory
-                <span
-                  className={`relative h-5 w-9 rounded-full transition-colors ${showTerritory ? "bg-neutral-900" : "bg-neutral-200"}`}
-                >
-                  <span
-                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${showTerritory ? "translate-x-4" : "translate-x-0.5"}`}
-                  />
-                </span>
-              </button>
-              <button
-                onClick={() => setShowNearby((v) => !v)}
-                className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50"
-              >
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50">
+                <input type="checkbox" checked={showNearby} onChange={() => setShowNearby((v) => !v)} />
                 Nearby businesses
-                <span
-                  className={`relative h-5 w-9 rounded-full transition-colors ${showNearby ? "bg-neutral-900" : "bg-neutral-200"}`}
-                >
-                  <span
-                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${showNearby ? "translate-x-4" : "translate-x-0.5"}`}
-                  />
-                </span>
-              </button>
+              </label>
             </div>
 
             <div className="space-y-0.5 p-1.5">

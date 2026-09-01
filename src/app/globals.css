@@ -37,3 +37,13 @@ body {
   padding: 0 !important;
   overflow: visible !important;
 }
+.gm-style-iw-c {
+  border-radius: 10px !important;
+}
+/* The little pointer triangle below the bubble — hiding it rather than
+   trying to recolor it, since it can't easily pick up our per-board
+   accent color and was left looking like a separate, uncolored box. */
+.gm-style-iw-tail,
+.gm-style-iw-tail::after {
+  display: none !important;
+}
