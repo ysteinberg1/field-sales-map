@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { setOptions, importLibrary } from "@googlemaps/js-api-loader";
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer as ClusterRenderer } from "@googlemaps/markerclusterer";
 import { statusIconDataUri } from "@/lib/statusIcons";
@@ -167,12 +168,6 @@ const ROADMAP_STYLE: google.maps.MapTypeStyle[] = [
   { featureType: "transit", stylers: [{ visibility: "off" }] },
 ];
 
-// Nearby-business search: fires this long after the map view stops
-// changing (Yoel's own spec — "3 to 5 seconds"), and only within a fresh
-// area (cached by rounded center+zoom so revisiting a spot doesn't re-query).
-const NEARBY_DEBOUNCE_MS = 4000;
-const nearbyCache = new Map<string, { name: string; lat: number; lng: number; address: string | null }[]>();
-
 function iconUrlForPin(p: Pin): string {
   if (p.board === "salesrabbit") return statusIconDataUri(p.status ?? "__unmatched__");
   // Old Cashflow only ever holds historical, already-closed customers — it
@@ -204,10 +199,6 @@ function normalizeSalesmanClient(raw: string | null | undefined): SalesmanBucket
   }
 }
 
-function nearbyCacheKey(center: google.maps.LatLng, zoom: number): string {
-  return `${center.lat().toFixed(2)},${center.lng().toFixed(2)}@${Math.round(zoom)}`;
-}
-
 export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: string }) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
@@ -217,18 +208,12 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const markersRef = useRef<Map<string, google.maps.Marker>>(new Map());
   const clustererRef = useRef<MarkerClusterer | null>(null);
   const territoryOverlayRef = useRef<google.maps.GroundOverlay | null>(null);
-  const nearbyMarkersRef = useRef<google.maps.Marker[]>([]);
-  const nearbyDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showNearbyRef = useRef(false);
-  const runNearbySearchRef = useRef<(() => void) | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const visibleBoardsRef = useRef<Set<string>>(new Set(ALL_BOARDS));
   const visibleSalesmenRef = useRef<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
   const renderPinsRef = useRef<((pins: Pin[]) => void) | null>(null);
   const deleteLeadRef = useRef<((pin: Pin, marker: google.maps.Marker) => void) | null>(null);
-  const pendingPointRef = useRef<{ lat: number; lng: number } | null>(null);
-  const pendingPanelRef = useRef<HTMLDivElement | null>(null);
-  const pendingPanelOverlayRef = useRef<google.maps.OverlayView | null>(null);
+  const newLeadInfoWindowRef = useRef<google.maps.InfoWindow | null>(null);
 
   const [salesman, setSalesman] = useState<string | null>(null);
   const [pendingPoint, setPendingPoint] = useState<{
@@ -243,37 +228,21 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const [saving, setSaving] = useState(false);
   const [mapType, setMapType] = useState<"roadmap" | "satellite" | "hybrid">("hybrid");
   const [showTerritory, setShowTerritory] = useState(false);
-  const [showNearby, setShowNearby] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [visibleBoards, setVisibleBoards] = useState<Set<string>>(new Set(ALL_BOARDS));
   const [visibleSalesmen, setVisibleSalesmen] = useState<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // The new-lead form's actual DOM home, once Google's own InfoWindow has
+  // created it and anchored it to the clicked point — the form itself is
+  // portaled into this div so React keeps full control over its inputs
+  // while Google handles all the positioning (same proven mechanism as
+  // the pin popup, instead of a hand-rolled screen-position calculation).
+  const [newLeadPanelContainer, setNewLeadPanelContainer] = useState<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("fsm_salesman");
     if (saved) setSalesman(saved);
   }, []);
-
-  useEffect(() => {
-    pendingPointRef.current = pendingPoint ? { lat: pendingPoint.lat, lng: pendingPoint.lng } : null;
-    // Google only calls an OverlayView's draw() automatically when the
-    // map's own view changes — react to the panel opening/closing too.
-    pendingPanelOverlayRef.current?.draw();
-  }, [pendingPoint]);
-
-  useEffect(() => {
-    showNearbyRef.current = showNearby;
-    if (!showNearby) {
-      nearbyMarkersRef.current.forEach((m) => m.setMap(null));
-      nearbyMarkersRef.current = [];
-      if (nearbyDebounceRef.current) clearTimeout(nearbyDebounceRef.current);
-    } else {
-      // Search right away — an "idle" event only fires on the *next*
-      // pan/zoom, so without this, switching the toggle on while the map
-      // is already sitting still would never search at all.
-      runNearbySearchRef.current?.();
-    }
-  }, [showNearby]);
 
   useEffect(() => {
     if (!mapContainer.current || mapRef.current || !salesman) return;
@@ -308,32 +277,13 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       const infoWindow = new InfoWindow();
       infoWindowRef.current = infoWindow;
 
-      // Anchors the "New lead" panel to the actual clicked/tapped point on
-      // the map, the same way the pin popup is anchored — Google calls
-      // draw() on every pan/zoom, so this keeps it locked to the spot
-      // instead of sitting in a fixed screen corner.
-      class PendingPanelOverlay extends google.maps.OverlayView {
-        onAdd() {}
-        onRemove() {}
-        draw() {
-          const panel = pendingPanelRef.current;
-          if (!panel) return;
-          const point = pendingPointRef.current;
-          if (!point) {
-            panel.style.display = "none";
-            return;
-          }
-          const projection = this.getProjection();
-          const pixel = projection?.fromLatLngToDivPixel(new google.maps.LatLng(point.lat, point.lng));
-          if (!pixel) return;
-          panel.style.display = "block";
-          panel.style.left = `${pixel.x}px`;
-          panel.style.top = `${pixel.y}px`;
-        }
-      }
-      const pendingPanelOverlay = new PendingPanelOverlay();
-      pendingPanelOverlay.setMap(map);
-      pendingPanelOverlayRef.current = pendingPanelOverlay;
+      // The new-lead form's own InfoWindow — reuses Google's proven
+      // anchor/positioning logic (same as the pin popup) instead of a
+      // hand-rolled screen-position calculation, which kept landing the
+      // panel at (0,0) instead of near the click. React portals the
+      // actual form JSX into this InfoWindow's content div once it opens.
+      const newLeadInfoWindow = new InfoWindow();
+      newLeadInfoWindowRef.current = newLeadInfoWindow;
 
       // Search bar (Places Autocomplete).
       if (searchInputRef.current) {
@@ -648,20 +598,16 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         const lat = latLng.lat();
         const lng = latLng.lng();
         map.panTo(latLng);
-        // panTo animates over several hundred ms — positioning the panel
-        // immediately (the [pendingPoint] effect does this too, as a
-        // same-view fallback) captures a mid-pan frame and leaves it
-        // stranded wherever that frame happened to be. Redraw again once
-        // the pan actually finishes.
-        google.maps.event.addListenerOnce(map, "idle", () => {
-          pendingPanelOverlayRef.current?.draw();
-        });
         pendingMarkerRef.current?.setMap(null);
         pendingMarkerRef.current = new Marker({
           position: { lat, lng },
           map,
           icon: { url: "http://maps.google.com/mapfiles/ms/icons/green-dot.png" },
         });
+        const container = document.createElement("div");
+        newLeadInfoWindow.setContent(container);
+        newLeadInfoWindow.open({ map, anchor: pendingMarkerRef.current });
+        setNewLeadPanelContainer(container);
         setPendingPoint({ lat, lng, address: null, loadingAddress: true });
         let address: string | null = null;
         try {
@@ -726,94 +672,6 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         if (e.latLng) void openNewLeadPanel(e.latLng);
       });
 
-      // Nearby-business search: fires after the view holds still for a few
-      // seconds, and only if the toggle is on. Cached per rounded
-      // center+zoom so revisiting a spot doesn't re-query. Also runs
-      // immediately when the toggle is switched on (see runNearbySearchRef
-      // below) — an "idle" event only fires on the *next* pan/zoom, so
-      // without this, turning the toggle on while the map sits still would
-      // never search at all.
-      const runNearbySearch = async () => {
-          if (!showNearbyRef.current) return;
-          const center = map.getCenter();
-          const zoom = map.getZoom();
-          if (!center || zoom == null) return;
-          const key = nearbyCacheKey(center, zoom);
-
-          let results = nearbyCache.get(key);
-          if (!results) {
-            const bounds = map.getBounds();
-            let radius = 1500;
-            if (bounds) {
-              const ne = bounds.getNorthEast();
-              radius = Math.min(50000, google.maps.geometry.spherical.computeDistanceBetween(center, ne));
-            }
-            try {
-              const { Place } = (await google.maps.importLibrary("places")) as google.maps.PlacesLibrary;
-              const { places } = await Place.searchNearby({
-                fields: ["displayName", "location", "formattedAddress"],
-                locationRestriction: { center, radius },
-                maxResultCount: 20,
-              });
-              results = places
-                .filter((p) => p.location)
-                .map((p) => ({
-                  name: p.displayName ?? "Unknown",
-                  lat: p.location!.lat(),
-                  lng: p.location!.lng(),
-                  address: p.formattedAddress ?? null,
-                }));
-              nearbyCache.set(key, results);
-            } catch (err) {
-              console.error("[field-map] Nearby search failed:", err);
-              return;
-            }
-          }
-
-          if (!showNearbyRef.current) return; // toggled off while the search was in flight
-          nearbyMarkersRef.current.forEach((m) => m.setMap(null));
-          // A distinct violet dot (not used anywhere else in the badge
-          // system) with a small store-front glyph, so nearby businesses
-          // read as clearly different from tracked leads at a glance.
-          const NEARBY_SIZE = 18;
-          const NEARBY_ICON = {
-            url:
-              "data:image/svg+xml;utf8," +
-              encodeURIComponent(
-                `<svg xmlns="http://www.w3.org/2000/svg" width="${NEARBY_SIZE}" height="${NEARBY_SIZE}">` +
-                  `<circle cx="9" cy="9" r="8" fill="#7c6fdb" stroke="white" stroke-width="1.5"/>` +
-                  `<path d="M5.5 8.2V12a.6.6 0 0 0 .6.6h1.3V9.8h3v2.8h1.3a.6.6 0 0 0 .6-.6V8.2M5 8l4-2.6L13 8" stroke="white" stroke-width="1" fill="none" stroke-linecap="round" stroke-linejoin="round"/>` +
-                `</svg>`
-              ),
-            scaledSize: new google.maps.Size(NEARBY_SIZE, NEARBY_SIZE),
-            anchor: new google.maps.Point(NEARBY_SIZE / 2, NEARBY_SIZE / 2),
-          };
-          nearbyMarkersRef.current = results.map((biz) => {
-            const marker = new Marker({
-              position: { lat: biz.lat, lng: biz.lng },
-              map,
-              icon: NEARBY_ICON,
-              zIndex: 1,
-            });
-            marker.addListener("click", () => {
-              infoWindow.setContent(
-                `<div style="min-width:180px;border-radius:8px;background:white;padding:12px;border-left:4px solid #7c6fdb">
-                   <div style="font-size:10.5px;font-weight:600;letter-spacing:0.03em;text-transform:uppercase;color:#7c6fdb;margin-bottom:3px">Nearby business</div>
-                   <div style="font-weight:600;color:#171717">${biz.name}</div>
-                   ${biz.address ? `<div style="font-size:13px;color:#737373;margin-top:2px">${biz.address}</div>` : ""}
-                 </div>`
-              );
-              infoWindow.open({ map, anchor: marker });
-            });
-            return marker;
-          });
-      };
-      runNearbySearchRef.current = runNearbySearch;
-
-      map.addListener("idle", () => {
-        if (nearbyDebounceRef.current) clearTimeout(nearbyDebounceRef.current);
-        nearbyDebounceRef.current = setTimeout(runNearbySearch, NEARBY_DEBOUNCE_MS);
-      });
     })();
 
     return () => {
@@ -920,6 +778,8 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       }
     }
 
+    newLeadInfoWindowRef.current?.close();
+    setNewLeadPanelContainer(null);
     setPendingPoint(null);
     setDealName("");
     setDealNote("");
@@ -929,6 +789,8 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const cancelPendingPoint = () => {
     pendingMarkerRef.current?.setMap(null);
     pendingMarkerRef.current = null;
+    newLeadInfoWindowRef.current?.close();
+    setNewLeadPanelContainer(null);
     setPendingPoint(null);
     setDealName("");
     setDealNote("");
@@ -1016,10 +878,6 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                 <input type="checkbox" checked={showTerritory} onChange={() => setShowTerritory((v) => !v)} />
                 Territory
               </label>
-              <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50">
-                <input type="checkbox" checked={showNearby} onChange={() => setShowNearby((v) => !v)} />
-                Nearby businesses
-              </label>
             </div>
 
             <div className="space-y-0.5 p-1.5">
@@ -1055,86 +913,86 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         )}
       </div>
 
-      {pendingPoint && (
-        <div ref={pendingPanelRef} className="absolute z-20 w-72 max-w-[90vw] -translate-x-1/2 -translate-y-full pb-3">
-        <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-lg">
-          <div className="mb-3 flex items-center justify-between">
-            <div className="text-sm font-medium text-neutral-500">New lead — {salesman}</div>
+      {pendingPoint &&
+        newLeadPanelContainer &&
+        createPortal(
+          <div className="w-72 max-w-[80vw] border-l-4 border-green-600 bg-white p-3 pl-2.5">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-sm font-medium text-neutral-500">New lead — {salesman}</div>
+              <button
+                type="button"
+                aria-label="Cancel"
+                className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md border border-neutral-200 text-neutral-500"
+                onClick={cancelPendingPoint}
+              >
+                ×
+              </button>
+            </div>
+            <input
+              className="mb-3 w-full rounded border px-3 py-2 text-sm text-neutral-700"
+              placeholder={pendingPoint.loadingAddress ? "Looking up address…" : "Address (edit if needed)"}
+              value={pendingPoint.address ?? ""}
+              disabled={pendingPoint.loadingAddress}
+              onChange={(e) => setPendingPoint((p) => (p ? { ...p, address: e.target.value } : p))}
+            />
+            <input
+              className="mb-3 w-full rounded border px-3 py-2"
+              placeholder="Business / customer name (optional — defaults to the street address)"
+              value={dealName}
+              onChange={(e) => setDealName(e.target.value)}
+              autoFocus
+            />
+            <textarea
+              className="mb-3 w-full rounded border px-3 py-2 text-sm"
+              placeholder="Note (optional)"
+              rows={2}
+              value={dealNote}
+              onChange={(e) => setDealNote(e.target.value)}
+            />
+            <div className="relative mb-3">
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded border px-3 py-2 text-sm text-neutral-700"
+                onClick={() => setStatusMenuOpen((v) => !v)}
+              >
+                <img src={statusIconDataUri(dealStatus)} alt="" className="h-5 w-5 rounded" />
+                <span className="flex-1 text-left">{dealStatus}</span>
+                <span className="text-neutral-400">▾</span>
+              </button>
+              {statusMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setStatusMenuOpen(false)} />
+                  <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded border bg-white shadow-lg">
+                    {STATUS_OPTIONS.map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-neutral-100 ${
+                          s === dealStatus ? "bg-neutral-50 font-medium" : ""
+                        }`}
+                        onClick={() => {
+                          setDealStatus(s);
+                          setStatusMenuOpen(false);
+                        }}
+                      >
+                        <img src={statusIconDataUri(s)} alt="" className="h-5 w-5 rounded" />
+                        <span>{s}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             <button
-              type="button"
-              aria-label="Cancel"
-              className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md border border-neutral-200 text-neutral-500"
-              onClick={cancelPendingPoint}
+              className="w-full rounded bg-green-600 py-2 text-white disabled:opacity-50"
+              disabled={(!dealName && !pendingPoint.address) || saving || pendingPoint.loadingAddress}
+              onClick={submitDeal}
             >
-              ×
+              {saving ? "Saving…" : "Create Lead"}
             </button>
-          </div>
-          <input
-            className="mb-3 w-full rounded border px-3 py-2 text-sm text-neutral-700"
-            placeholder={pendingPoint.loadingAddress ? "Looking up address…" : "Address (edit if needed)"}
-            value={pendingPoint.address ?? ""}
-            disabled={pendingPoint.loadingAddress}
-            onChange={(e) => setPendingPoint((p) => (p ? { ...p, address: e.target.value } : p))}
-          />
-          <input
-            className="mb-3 w-full rounded border px-3 py-2"
-            placeholder="Business / customer name (optional — defaults to the street address)"
-            value={dealName}
-            onChange={(e) => setDealName(e.target.value)}
-            autoFocus
-          />
-          <textarea
-            className="mb-3 w-full rounded border px-3 py-2 text-sm"
-            placeholder="Note (optional)"
-            rows={2}
-            value={dealNote}
-            onChange={(e) => setDealNote(e.target.value)}
-          />
-          <div className="relative mb-3">
-            <button
-              type="button"
-              className="flex w-full items-center gap-2 rounded border px-3 py-2 text-sm text-neutral-700"
-              onClick={() => setStatusMenuOpen((v) => !v)}
-            >
-              <img src={statusIconDataUri(dealStatus)} alt="" className="h-5 w-5 rounded" />
-              <span className="flex-1 text-left">{dealStatus}</span>
-              <span className="text-neutral-400">▾</span>
-            </button>
-            {statusMenuOpen && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setStatusMenuOpen(false)} />
-                <div className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded border bg-white shadow-lg">
-                  {STATUS_OPTIONS.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-neutral-100 ${
-                        s === dealStatus ? "bg-neutral-50 font-medium" : ""
-                      }`}
-                      onClick={() => {
-                        setDealStatus(s);
-                        setStatusMenuOpen(false);
-                      }}
-                    >
-                      <img src={statusIconDataUri(s)} alt="" className="h-5 w-5 rounded" />
-                      <span>{s}</span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-          <button
-            className="w-full rounded bg-green-600 py-2 text-white disabled:opacity-50"
-            disabled={(!dealName && !pendingPoint.address) || saving || pendingPoint.loadingAddress}
-            onClick={submitDeal}
-          >
-            {saving ? "Saving…" : "Create Lead"}
-          </button>
-        </div>
-        <div className="mx-auto -mt-1.5 h-3 w-3 rotate-45 border-b border-r border-neutral-200 bg-white" />
-        </div>
-      )}
+          </div>,
+          newLeadPanelContainer
+        )}
     </div>
   );
 }
