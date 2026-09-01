@@ -485,9 +485,15 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         markersRef.current.forEach((m) => m.setMap(null));
         markersRef.current = new Map();
 
-        const visible = pins.filter(
-          (pin) => visibleBoardsRef.current.has(pin.board) && visibleSalesmenRef.current.has(pin.salesman)
-        );
+        // Cached pin data from before the salesman field existed won't have
+        // it — treat anything not exactly one of the 4 known buckets as
+        // "Other" instead of silently hiding it (a stale cache should
+        // never make pins disappear).
+        const visible = pins.filter((pin) => {
+          if (!visibleBoardsRef.current.has(pin.board)) return false;
+          const bucket = SALESMAN_FILTERS.includes(pin.salesman) ? pin.salesman : "Other";
+          return visibleSalesmenRef.current.has(bucket);
+        });
         const markers = visible.map((pin) => {
           const marker = new Marker({
             position: { lat: pin.lat, lng: pin.lng },
