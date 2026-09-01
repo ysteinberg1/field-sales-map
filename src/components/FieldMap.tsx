@@ -6,6 +6,8 @@ import { MarkerClusterer, type Renderer as ClusterRenderer } from "@googlemaps/m
 import { statusIconDataUri } from "@/lib/statusIcons";
 import { sourceBadgeDataUri } from "@/lib/sourceIcons";
 
+type SalesmanBucket = "Chuny" | "Ari" | "Shragie" | "Other";
+
 interface Pin {
   board: string;
   tier: number;
@@ -16,6 +18,7 @@ interface Pin {
   address: string | null;
   status: string | null;
   stage: string | null;
+  salesman: SalesmanBucket;
 }
 
 // Monday board IDs, for building "Open in Monday" links from the popup.
@@ -36,7 +39,61 @@ const BOARD_LABELS: Record<string, string> = {
 };
 const ALL_BOARDS = ["deals", "old_cashflow", "pipedrive", "salesrabbit"];
 
+// Per-board popup styling + which columns get special treatment (header
+// date, Won Date pill, salesman/owner) instead of showing up in the
+// generic field list — mirrors BOARD_META in src/lib/monday.ts.
+const BOARD_META: Record<
+  string,
+  {
+    color: string;
+    bg: string;
+    text: string;
+    headerDateCol: string | null;
+    wonDateCol: string | null;
+    stageCol: string | null;
+    salesmanCol: string;
+  }
+> = {
+  deals: {
+    color: "#4c7a2e",
+    bg: "#e9f1e1",
+    text: "#294617",
+    headerDateCol: "date_mkv0gff1",
+    wonDateCol: "date_mkv0sgxs",
+    stageCol: "deal_stage",
+    salesmanCol: "color_mkv0qrwq",
+  },
+  old_cashflow: {
+    color: "#b23b34",
+    bg: "#f7e6e4",
+    text: "#6b201b",
+    headerDateCol: null,
+    wonDateCol: null,
+    stageCol: null,
+    salesmanCol: "color_mm6d1vdk",
+  },
+  pipedrive: {
+    color: "#57544d",
+    bg: "#eae8e2",
+    text: "#302e29",
+    headerDateCol: "date4",
+    wonDateCol: "date_mm6d9hje",
+    stageCol: "status",
+    salesmanCol: "color_mm6dw3r2",
+  },
+  salesrabbit: {
+    color: "#2f6fa8",
+    bg: "#e5eef6",
+    text: "#1a3c56",
+    headerDateCol: "date_mm6mgd2r",
+    wonDateCol: null,
+    stageCol: null,
+    salesmanCol: "color_mm4v4hed",
+  },
+};
+
 const SALESMEN = ["Yoel", "Ari", "Chuny", "Shragie", "Neil", "JJ"];
+const SALESMAN_FILTERS: SalesmanBucket[] = ["Chuny", "Ari", "Shragie", "Other"];
 
 // Utility-territory overlay, exported from the SalesRabbit Google Earth
 // project (Provident_LED_-_Map_fixed.kmz) — a GroundOverlay PNG with a
@@ -77,7 +134,7 @@ const FIELD_LABELS: Record<string, string> = {
   date4: "Deal Created",
   text_mm6dbpxy: "Address",
   color_mm6d1vdk: "Salesman",
-  date_mm6drq5j: "Sales Date",
+  date_mm6drq5j: "Installed",
   color_mkv0qrwq: "Salesman",
   deal_stage: "Stage",
   long_text_mm6khzqt: "Sales Notes",
@@ -110,10 +167,31 @@ function iconUrlForPin(p: Pin): string {
   if (p.board === "salesrabbit") return statusIconDataUri(p.status ?? "__unmatched__");
   // Old Cashflow only ever holds historical, already-closed customers — it
   // doesn't even track a stage/status, so it's always effectively "Won".
-  if (p.board === "old_cashflow") return sourceBadgeDataUri("won");
+  // Each board gets its own "won" color so the source is visible at a
+  // glance: green = Deals, red = Old Cashflow, dark gray = Pipedrive.
+  if (p.board === "old_cashflow") return sourceBadgeDataUri("won-oldcashflow");
+  if (p.board === "pipedrive") return p.stage === "Won" ? sourceBadgeDataUri("won-pipedrive") : sourceBadgeDataUri("pipedrive");
   if (p.stage === "Won") return sourceBadgeDataUri("won");
-  if (p.board === "pipedrive") return sourceBadgeDataUri("pipedrive");
   return sourceBadgeDataUri("monday");
+}
+
+// Same bucketing rule as normalizeSalesman in src/lib/pins.ts, duplicated
+// here since this is a client component — used only for the pin dropped
+// instantly on the map right after creating a lead (see submitDeal).
+function normalizeSalesmanClient(raw: string | null | undefined): SalesmanBucket {
+  switch (raw) {
+    case "Chuny":
+    case "Chuny Koenig":
+      return "Chuny";
+    case "Ari":
+    case "Ari Weber":
+      return "Ari";
+    case "Shragie":
+    case "Shragie Gobioff":
+      return "Shragie";
+    default:
+      return "Other";
+  }
 }
 
 function nearbyCacheKey(center: google.maps.LatLng, zoom: number): string {
@@ -135,7 +213,9 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const runNearbySearchRef = useRef<(() => void) | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const visibleBoardsRef = useRef<Set<string>>(new Set(ALL_BOARDS));
+  const visibleSalesmenRef = useRef<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
   const renderPinsRef = useRef<((pins: Pin[]) => void) | null>(null);
+  const deleteLeadRef = useRef<((pin: Pin, marker: google.maps.Marker) => void) | null>(null);
 
   const [salesman, setSalesman] = useState<string | null>(null);
   const [pendingPoint, setPendingPoint] = useState<{
@@ -154,6 +234,8 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [visibleBoards, setVisibleBoards] = useState<Set<string>>(new Set(ALL_BOARDS));
   const [boardFilterOpen, setBoardFilterOpen] = useState(false);
+  const [visibleSalesmen, setVisibleSalesmen] = useState<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
+  const [salesmanFilterOpen, setSalesmanFilterOpen] = useState(false);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("fsm_salesman");
@@ -246,38 +328,156 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       // more pins fit without crowding, but a desktop has room to spare.
       const ICON_PX = window.innerWidth >= 1024 ? 40 : 30;
 
+      // Bigger icon on the currently-open pin — reset when the popup closes.
+      let activeMarker: google.maps.Marker | null = null;
+      let activeMarkerIcon: google.maps.Icon | null = null;
+      const clearActiveMarkerHighlight = () => {
+        if (activeMarker && activeMarkerIcon) activeMarker.setIcon(activeMarkerIcon);
+        activeMarker = null;
+        activeMarkerIcon = null;
+      };
+      infoWindow.addListener("closeclick", clearActiveMarkerHighlight);
+
+      const formatDate = (iso: string | null | undefined) => {
+        if (!iso) return null;
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return iso;
+        return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      };
+
       const showPinInfo = (pin: Pin, marker: google.maps.Marker) => {
+        // Center the map on the pin and enlarge its icon slightly while
+        // the popup is open, so the tapped pin is unmistakable.
+        clearActiveMarkerHighlight();
+        map.panTo(marker.getPosition()!);
+        const currentIcon = marker.getIcon() as google.maps.Icon;
+        activeMarker = marker;
+        activeMarkerIcon = currentIcon;
+        const baseSize = currentIcon.scaledSize?.width ?? ICON_PX;
+        marker.setIcon({ ...currentIcon, scaledSize: new google.maps.Size(baseSize * 1.25, baseSize * 1.25) });
+        marker.setZIndex(9999);
+
+        const meta = BOARD_META[pin.board];
+        const boardLabel = BOARD_LABELS[pin.board] ?? pin.board;
+        const iconUrl = iconUrlForPin(pin);
+
         infoWindow.setContent(
-          `<div style="min-width:200px">
-             <div style="font-weight:600;color:#171717">${pin.name}</div>
-             <div style="margin-bottom:2px;font-size:12px;font-weight:500;color:#2563eb">${BOARD_LABELS[pin.board] ?? pin.board}</div>
-             ${pin.address ? `<div style="font-size:13px;color:#737373">${pin.address}</div>` : ""}
-             <div style="margin-top:4px;font-size:13px;font-style:italic;color:#a3a3a3">Loading details…</div>
+          `<div style="min-width:230px;border-left:4px solid ${meta.color};padding-left:10px">
+             <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+               <div style="display:flex;align-items:center;gap:8px;min-width:0">
+                 <img src="${iconUrl}" width="30" height="30" style="flex-shrink:0" />
+                 <div style="min-width:0">
+                   <div style="font-weight:600;color:#171717;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${pin.name}</div>
+                 </div>
+               </div>
+               <button id="fm-popup-close" aria-label="Close" style="flex-shrink:0;width:22px;height:22px;border-radius:6px;border:1px solid #e5e5e5;background:white;color:#737373;cursor:pointer;font-size:14px;line-height:1">×</button>
+             </div>
+             <div style="display:inline-block;margin-top:6px;font-size:11px;font-weight:500;padding:2px 9px;border-radius:20px;background:${meta.bg};color:${meta.text}">${boardLabel}</div>
+             <div style="margin-top:8px;font-size:13px;font-style:italic;color:#a3a3a3">Loading details…</div>
            </div>`
         );
         infoWindow.open({ map, anchor: marker });
+        google.maps.event.addListenerOnce(infoWindow, "domready", () => {
+          document.getElementById("fm-popup-close")?.addEventListener("click", () => infoWindow.close());
+        });
 
         fetch(`/api/item/${pin.itemId}?board=${pin.board}`)
           .then((r) => r.json())
           .then((full) => {
-            const rows = Object.entries(full.details)
-              .filter(([, v]) => v)
-              .map(([k, v]) => `<div><span style="color:#a3a3a3">${FIELD_LABELS[k] ?? k}:</span> ${v}</div>`)
-              .join("");
+            const details: Record<string, string | null> = full.details ?? {};
+            const excluded = new Set(
+              [meta.headerDateCol, meta.wonDateCol, meta.stageCol, meta.salesmanCol].filter(
+                (c): c is string => c !== null
+              )
+            );
+
+            const headerDate = meta.headerDateCol ? formatDate(details[meta.headerDateCol]) : null;
+            const ownerName = details[meta.salesmanCol] || null;
             const boardId = BOARD_IDS[pin.board];
             const mondayUrl = `${MONDAY_WORKSPACE_URL}/boards/${boardId}/pulses/${pin.itemId}`;
+
+            let stageRow = "";
+            if (meta.stageCol) {
+              const stageVal = details[meta.stageCol];
+              if (stageVal) {
+                const wonDate = meta.wonDateCol ? formatDate(details[meta.wonDateCol]) : null;
+                const wonPill =
+                  stageVal === "Won" && wonDate
+                    ? ` <span style="display:inline-block;margin-left:4px;font-size:10.5px;font-weight:500;padding:1px 7px;border-radius:20px;background:${meta.bg};color:${meta.text}">Won ${wonDate}</span>`
+                    : "";
+                stageRow = `<div><span style="color:#a3a3a3">${FIELD_LABELS[meta.stageCol] ?? "Stage"}:</span> ${stageVal}${wonPill}</div>`;
+              }
+            }
+
+            const otherRows = Object.entries(details)
+              .filter(([k, v]) => v && !excluded.has(k))
+              .map(([k, v]) => `<div><span style="color:#a3a3a3">${FIELD_LABELS[k] ?? k}:</span> ${v}</div>`)
+              .join("");
+
+            const deleteBtn =
+              pin.board === "salesrabbit"
+                ? `<button id="fm-popup-delete" style="font-size:12px;color:#b23b34;background:none;border:none;padding:0;cursor:pointer">Delete lead</button>`
+                : `<span style="font-size:12px;color:#a3a3a3;font-style:italic">Synced from Monday</span>`;
+
             infoWindow.setContent(
-              `<div style="min-width:200px">
-                 <div style="margin-bottom:2px;font-weight:600;color:#171717">${full.name}</div>
-                 <div style="margin-bottom:4px;font-size:12px;font-weight:500;color:#2563eb">${BOARD_LABELS[pin.board] ?? pin.board}</div>
-                 <div style="font-size:13px;color:#404040;line-height:1.4">${rows}</div>
-                 <a href="${mondayUrl}" target="_blank" rel="noopener noreferrer"
-                    style="margin-top:8px;display:inline-block;font-size:13px;font-weight:500;color:#2563eb">
-                   Open in Monday →
-                 </a>
+              `<div style="min-width:230px;border-left:4px solid ${meta.color};padding-left:10px">
+                 <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+                   <div style="display:flex;align-items:center;gap:8px;min-width:0">
+                     <img src="${iconUrl}" width="30" height="30" style="flex-shrink:0" />
+                     <div style="min-width:0">
+                       <div style="font-weight:600;color:#171717;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${full.name}</div>
+                       ${headerDate ? `<div style="font-size:11.5px;color:#737373">Created ${headerDate}</div>` : ""}
+                     </div>
+                   </div>
+                   <div style="display:flex;gap:6px;flex-shrink:0">
+                     <a href="${mondayUrl}" target="_blank" rel="noopener noreferrer" aria-label="Open in Monday" style="width:22px;height:22px;border-radius:6px;border:1px solid #e5e5e5;background:white;color:#737373;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:12px">↗</a>
+                     <button id="fm-popup-close" aria-label="Close" style="width:22px;height:22px;border-radius:6px;border:1px solid #e5e5e5;background:white;color:#737373;cursor:pointer;font-size:14px;line-height:1">×</button>
+                   </div>
+                 </div>
+                 <div style="display:inline-block;margin-top:6px;font-size:11px;font-weight:500;padding:2px 9px;border-radius:20px;background:${meta.bg};color:${meta.text}">${boardLabel}</div>
+                 <div style="margin-top:10px;padding-top:10px;border-top:1px solid #eee;font-size:13px;color:#404040;line-height:1.6">
+                   ${stageRow}${otherRows}
+                 </div>
+                 <div style="margin-top:10px;padding-top:8px;border-top:1px solid #eee;display:flex;justify-content:space-between;align-items:center;font-size:12px">
+                   <div style="color:#a3a3a3">Owned by <b style="color:#404040;font-weight:500">${ownerName ?? "—"}</b></div>
+                   ${deleteBtn}
+                 </div>
                </div>`
             );
+            google.maps.event.addListenerOnce(infoWindow, "domready", () => {
+              document.getElementById("fm-popup-close")?.addEventListener("click", () => infoWindow.close());
+              document.getElementById("fm-popup-delete")?.addEventListener("click", () => {
+                if (!window.confirm(`Delete "${full.name}"? This removes it from Monday and the map.`)) return;
+                deleteLeadRef.current?.(pin, marker);
+                infoWindow.close();
+              });
+            });
           });
+      };
+
+      // Only ever called for SalesRabbit pins — the popup only renders a
+      // Delete lead button for that board (see the deleteBtn ternary
+      // above). Deletes the Monday item and drops the pin from the map.
+      deleteLeadRef.current = (pin, marker) => {
+        fetch("/api/delete-lead", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ itemId: pin.itemId, board: pin.board }),
+        })
+          .then((r) => r.json())
+          .then((result) => {
+            if (!result.ok) {
+              window.alert("Couldn't delete this lead. Try again.");
+              return;
+            }
+            clustererRef.current?.removeMarker(marker);
+            marker.setMap(null);
+            markersRef.current.delete(`${pin.board}:${pin.itemId}`);
+            pinsRef.current = pinsRef.current.filter(
+              (p) => !(p.board === pin.board && p.itemId === pin.itemId)
+            );
+          })
+          .catch(() => window.alert("Couldn't delete this lead. Try again."));
       };
 
       const renderPins = (pins: Pin[]) => {
@@ -285,7 +485,9 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         markersRef.current.forEach((m) => m.setMap(null));
         markersRef.current = new Map();
 
-        const visible = pins.filter((pin) => visibleBoardsRef.current.has(pin.board));
+        const visible = pins.filter(
+          (pin) => visibleBoardsRef.current.has(pin.board) && visibleSalesmenRef.current.has(pin.salesman)
+        );
         const markers = visible.map((pin) => {
           const marker = new Marker({
             position: { lat: pin.lat, lng: pin.lng },
@@ -308,15 +510,29 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
 
         const renderer: ClusterRenderer = {
           render: ({ count, position }) => {
+            // Ripple look (matches SalesRabbit's real map): a dense core
+            // circle carrying the count, surrounded by a distinctly more
+            // translucent outer ring — not one flat single-opacity fill.
+            // Both radii grow with the pin count (log scale so it doesn't
+            // blow up on a 1000+ cluster).
+            const outer = Math.min(160, Math.max(44, 36 + 34 * Math.log10(count + 1)));
+            const core = outer * 0.54;
+            const fontSize = Math.min(20, Math.max(11, 11 + 3 * Math.log10(count + 1)));
+            const half = outer / 2;
             const clusterMarker = new Marker({
               position,
               icon: {
                 url:
                   "data:image/svg+xml;utf8," +
                   encodeURIComponent(
-                    `<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52"><circle cx="26" cy="26" r="22" fill="#3f3f46" fill-opacity="0.8"/><text x="26" y="31" font-family="sans-serif" font-size="14" fill="white" text-anchor="middle">${count}</text></svg>`
+                    `<svg xmlns="http://www.w3.org/2000/svg" width="${outer}" height="${outer}">` +
+                      `<circle cx="${half}" cy="${half}" r="${half}" fill="#b4b2a9" fill-opacity="0.22"/>` +
+                      `<circle cx="${half}" cy="${half}" r="${core / 2}" fill="#b4b2a9" fill-opacity="0.75" stroke="white" stroke-opacity="0.5"/>` +
+                      `<text x="${half}" y="${half + fontSize * 0.35}" font-family="sans-serif" font-size="${fontSize}" font-weight="500" fill="white" text-anchor="middle">${count}</text>` +
+                    `</svg>`
                   ),
-                scaledSize: new google.maps.Size(52, 52),
+                scaledSize: new google.maps.Size(outer, outer),
+                anchor: new google.maps.Point(half, half),
               },
               zIndex: 1000 + count,
             });
@@ -527,6 +743,20 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
     renderPinsRef.current?.(pinsRef.current);
   }, [visibleBoards]);
 
+  useEffect(() => {
+    visibleSalesmenRef.current = visibleSalesmen;
+    renderPinsRef.current?.(pinsRef.current);
+  }, [visibleSalesmen]);
+
+  const toggleSalesman = (salesmanBucket: SalesmanBucket) => {
+    setVisibleSalesmen((prev) => {
+      const next = new Set(prev);
+      if (next.has(salesmanBucket)) next.delete(salesmanBucket);
+      else next.add(salesmanBucket);
+      return next;
+    });
+  };
+
   const toggleBoard = (board: string) => {
     setVisibleBoards((prev) => {
       const next = new Set(prev);
@@ -581,9 +811,10 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         address: pendingPoint.address,
         status: dealStatus,
         stage: null,
+        salesman: normalizeSalesmanClient(salesman),
       };
       pinsRef.current = [...pinsRef.current, newPin];
-      if (visibleBoardsRef.current.has(newPin.board)) {
+      if (visibleBoardsRef.current.has(newPin.board) && visibleSalesmenRef.current.has(newPin.salesman)) {
         const marker = new google.maps.Marker({
           position: { lat: newPin.lat, lng: newPin.lng },
           icon: {
@@ -712,6 +943,30 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                   onChange={() => toggleBoard(board)}
                 />
                 {BOARD_LABELS[board]}
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="absolute right-3 top-64 z-10 sm:top-48">
+        <button
+          onClick={() => setSalesmanFilterOpen((v) => !v)}
+          className={`rounded-lg px-3 py-2 text-sm font-medium shadow-lg ${
+            salesmanFilterOpen ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
+          }`}
+        >
+          Salesmen
+        </button>
+        {salesmanFilterOpen && (
+          <div className="absolute right-0 mt-1 w-44 rounded-lg bg-white p-2 shadow-lg">
+            {SALESMAN_FILTERS.map((s) => (
+              <label
+                key={s}
+                className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
+              >
+                <input type="checkbox" checked={visibleSalesmen.has(s)} onChange={() => toggleSalesman(s)} />
+                {s}
               </label>
             ))}
           </div>

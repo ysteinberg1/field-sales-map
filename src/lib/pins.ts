@@ -1,4 +1,6 @@
-import { BOARDS, BoardKey, fetchBoardItems, MondayItem } from "./monday";
+import { BOARD_META, BOARDS, BoardKey, fetchBoardItems, MondayItem } from "./monday";
+
+export type SalesmanBucket = "Chuny" | "Ari" | "Shragie" | "Other";
 
 export interface Pin {
   board: BoardKey;
@@ -10,6 +12,7 @@ export interface Pin {
   address: string | null;
   status: string | null;
   stage: string | null;
+  salesman: SalesmanBucket;
 }
 
 // Status column on the SalesRabbit board — labels feed the status-icon set
@@ -23,6 +26,27 @@ const STAGE_COLUMN: Partial<Record<BoardKey, string>> = {
   deals: "deal_stage",
   pipedrive: "status",
 };
+
+// Buckets every board's salesman/owner column down to the 3 main salesmen
+// or "Other" — confirmed with Yoel 2026-09-02: exact match only (first
+// name or full name), no fuzzy matching. Combo values ("Chuny/Ari"),
+// other people's names, and Old Cashflow's leftover non-name status
+// values ("In Progress", "Stuck", etc.) all fall into "Other" by design.
+export function normalizeSalesman(raw: string | null | undefined): SalesmanBucket {
+  switch (raw) {
+    case "Chuny":
+    case "Chuny Koenig":
+      return "Chuny";
+    case "Ari":
+    case "Ari Weber":
+      return "Ari";
+    case "Shragie":
+    case "Shragie Gobioff":
+      return "Shragie";
+    default:
+      return "Other";
+  }
+}
 
 
 function parseLocationValue(
@@ -42,7 +66,7 @@ function parseLocationValue(
   }
 }
 
-function itemToPin(item: MondayItem, key: BoardKey): Pin | null {
+export function itemToPin(item: MondayItem, key: BoardKey): Pin | null {
   const cfg = BOARDS[key];
   const stageCol = STAGE_COLUMN[key];
   const loc = parseLocationValue(item, cfg.locationColumnId);
@@ -50,6 +74,7 @@ function itemToPin(item: MondayItem, key: BoardKey): Pin | null {
   const status =
     key === "salesrabbit" ? item.column_values.find((c) => c.id === SALESRABBIT_STATUS_COL)?.text ?? null : null;
   const stage = stageCol ? item.column_values.find((c) => c.id === stageCol)?.text ?? null : null;
+  const salesmanRaw = item.column_values.find((c) => c.id === BOARD_META[key].salesmanCol)?.text ?? null;
   return {
     board: key,
     tier: cfg.tier,
@@ -60,13 +85,19 @@ function itemToPin(item: MondayItem, key: BoardKey): Pin | null {
     address: loc.address,
     status,
     stage,
+    salesman: normalizeSalesman(salesmanRaw),
   };
 }
 
-function columnIdsFor(key: BoardKey): string[] {
+export function columnIdsFor(key: BoardKey): string[] {
   const cfg = BOARDS[key];
   const stageCol = STAGE_COLUMN[key];
-  return [cfg.locationColumnId, ...(key === "salesrabbit" ? [SALESRABBIT_STATUS_COL] : []), ...(stageCol ? [stageCol] : [])];
+  return [
+    cfg.locationColumnId,
+    BOARD_META[key].salesmanCol,
+    ...(key === "salesrabbit" ? [SALESRABBIT_STATUS_COL] : []),
+    ...(stageCol ? [stageCol] : []),
+  ];
 }
 
 // Fetches all four boards. Every pin is shown, even ones that overlap at

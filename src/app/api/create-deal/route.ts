@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
 import { list, put } from "@vercel/blob";
 import { BOARDS, createItem } from "@/lib/monday";
-import { upsertPin } from "@/lib/pins";
+import { normalizeSalesman, upsertPin } from "@/lib/pins";
 import type { Pin } from "@/lib/pins";
 
 // Landing board for new pins created from the field. Change to "deals" here
 // if the "create in SalesRabbit, promote later" decision changes.
 const TARGET_BOARD: keyof typeof BOARDS = "salesrabbit";
 
-// SalesRabbit column IDs, confirmed against the live board.
-const SALESRABBIT_LOCATION_COL = "location_mm6kf638"; // Dedup Location — the column the map actually reads
+// SalesRabbit column IDs, confirmed against the live board. Location must
+// stay in sync with BOARDS.salesrabbit.locationColumnId in monday.ts (the
+// raw Location column, not "Dedup Location") — the map reads from there.
+const SALESRABBIT_LOCATION_COL = BOARDS.salesrabbit.locationColumnId;
 const SALESRABBIT_SALESMAN_COL = "color_mm4v4hed"; // Lead Owner (status). Labels: JJ, Yoel, Shragie, Chuny, Ari, Neil
 const SALESRABBIT_NOTE_COL = "long_text_mm4v6hdv"; // Note
 const SALESRABBIT_STATUS_COL = "color_mm4vht3r"; // Status — see STATUS_OPTIONS in FieldMap.tsx for exact labels
@@ -64,6 +66,7 @@ export async function POST(request: Request) {
         address: address ?? null,
         status: status ?? null,
         stage: null,
+        salesman: normalizeSalesman(salesman),
       };
       const pins = upsertPin(cached.pins, newPin);
       await put(BLOB_PATHNAME, JSON.stringify({ pins, syncedAt: new Date().toISOString() }), {

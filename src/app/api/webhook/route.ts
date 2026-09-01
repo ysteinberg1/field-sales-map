@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { list, put } from "@vercel/blob";
 import { BOARDS, BoardKey, fetchItemDetail } from "@/lib/monday";
-import { Pin } from "@/lib/pins";
+import { columnIdsFor, itemToPin, Pin } from "@/lib/pins";
 
 const BLOB_PATHNAME = "pins.json";
 
@@ -25,9 +25,11 @@ export async function POST(request: Request) {
   );
   if (!boardKey) return NextResponse.json({ ok: true, skipped: true });
 
-  const cfg = BOARDS[boardKey];
-  const item = await fetchItemDetail(itemId, [cfg.locationColumnId]);
-  const locCol = item.column_values.find((c) => c.id === cfg.locationColumnId);
+  // Fetch every column the map dataset needs (location, status/stage,
+  // salesman) — not just location — so a live edit to any of those (e.g.
+  // a Pipedrive stage change) shows up on the map immediately too.
+  const item = await fetchItemDetail(itemId, columnIdsFor(boardKey));
+  const newPin = itemToPin(item, boardKey);
 
   // Load current dataset
   const { blobs } = await list({ prefix: BLOB_PATHNAME });
@@ -36,34 +38,12 @@ export async function POST(request: Request) {
     ? await (await fetch(existingBlob.url, { cache: "no-store" })).json()
     : { pins: [] };
 
-  // Remove any prior entry for this item
-  let pins = current.pins.filter(
+  // Remove any prior entry for this item, then add the fresh one back
+  // (unless it no longer has a valid location — e.g. address was cleared).
+  const pins = current.pins.filter(
     (p) => !(p.board === boardKey && p.itemId === itemId)
   );
-
-  if (locCol?.value) {
-    try {
-      const parsed = JSON.parse(locCol.value);
-      const lat = parseFloat(parsed.lat);
-      const lng = parseFloat(parsed.lng);
-      if (!Number.isNaN(lat) && !Number.isNaN(lng)) {
-        const newPin: Pin = {
-          board: boardKey,
-          tier: cfg.tier,
-          itemId,
-          name: item.name,
-          lat,
-          lng,
-          address: parsed.address ?? null,
-          status: null,
-          stage: null,
-        };
-        pins.push(newPin);
-      }
-    } catch {
-      // no valid location — item removed from the map
-    }
-  }
+  if (newPin) pins.push(newPin);
 
   await put(BLOB_PATHNAME, JSON.stringify({ pins, syncedAt: new Date().toISOString() }), {
     access: "public",

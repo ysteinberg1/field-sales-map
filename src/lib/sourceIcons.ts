@@ -10,12 +10,18 @@
 // real Gaussian blur, real circle clip) sidesteps that entirely.
 //
 // - Pipedrive Archive board, not yet Won -> real Pipedrive mark
-// - Deals / Old Cashflow board, not yet Won -> real Monday.com mark
-// - Deals or Pipedrive Archive board, Stage/Status label is exactly "Won"
-//   (confirmed against the live columns: deal_stage on Deals, status on
-//   Pipedrive Archive both carry a "Won" label) -> green check, the same
+// - Deals board, not yet Won -> real Monday.com mark
+// - Deals board, Stage is exactly "Won" -> green check ("won"), the same
 //   green Monday itself uses for that label (#00c875)
-export type SourceBadgeKind = "pipedrive" | "monday" | "won";
+// - Old Cashflow board (always effectively closed/historical) -> red
+//   check ("won-oldcashflow")
+// - Pipedrive Archive board, Stage is exactly "Won" -> dark gray check
+//   ("won-pipedrive")
+// The 3 colors are per-board, confirmed with Yoel 2026-09-02, so a pin's
+// source board is visible at a glance even before opening its popup.
+// "won-oldcashflow"/"won-pipedrive" were baked by recoloring "won"'s exact
+// pixels (same shape/shadow) rather than redrawn from scratch.
+export type SourceBadgeKind = "pipedrive" | "monday" | "won" | "won-oldcashflow" | "won-pipedrive";
 
 export function sourceBadgeUrl(kind: SourceBadgeKind): string {
   return `/badges/source-${kind}.png`;
