@@ -212,6 +212,8 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const visibleBoardsRef = useRef<Set<string>>(new Set(ALL_BOARDS));
   const visibleSalesmenRef = useRef<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
   const renderPinsRef = useRef<((pins: Pin[]) => void) | null>(null);
+  const showPinInfoRef = useRef<((pin: Pin, marker: google.maps.Marker) => void) | null>(null);
+  const openNewLeadPanelRef = useRef<((latLng: google.maps.LatLng) => void) | null>(null);
   const deleteLeadRef = useRef<((pin: Pin, marker: google.maps.Marker) => void) | null>(null);
   const newLeadInfoWindowRef = useRef<google.maps.InfoWindow | null>(null);
 
@@ -469,6 +471,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             });
           });
       };
+      showPinInfoRef.current = showPinInfo;
 
       // Only ever called for SalesRabbit pins — the popup only renders a
       // Delete lead button for that board (see the deleteBtn ternary
@@ -680,6 +683,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         }
         setPendingPoint((p) => (p && p.lat === lat && p.lng === lng ? { ...p, address, loadingAddress: false } : p));
       };
+      openNewLeadPanelRef.current = openNewLeadPanel;
 
       const DRAG_CANCEL_PX = 6;
       let pressTimer: ReturnType<typeof setTimeout> | null = null;
@@ -825,6 +829,14 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             anchor: new google.maps.Point(newPinSize / 2, newPinSize / 2),
           },
         });
+        // This marker is added straight to the map for instant feedback,
+        // bypassing renderPins — which meant it never got the click/
+        // rightclick handlers every other pin gets, so it looked like it
+        // worked but silently wasn't clickable at all.
+        marker.addListener("click", () => showPinInfoRef.current?.(newPin, marker));
+        marker.addListener("rightclick", () => {
+          openNewLeadPanelRef.current?.(new google.maps.LatLng(newPin.lat, newPin.lng));
+        });
         markersRef.current.set(`${newPin.board}:${newPin.itemId}`, marker);
         clustererRef.current?.addMarker(marker);
       }
@@ -848,6 +860,21 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
     setDealNote("");
     setDealStatus(STATUS_OPTIONS[0]);
   };
+
+  // Clicking anywhere outside the new-lead panel dismisses it, same as
+  // tapping its own × — ignores right-clicks so opening a new lead
+  // elsewhere on the map isn't treated as "click away to cancel this one".
+  useEffect(() => {
+    if (!newLeadPanelContainer) return;
+    const handler = (e: MouseEvent) => {
+      if (e.button === 2) return;
+      if (newLeadPanelContainer.contains(e.target as Node)) return;
+      cancelPendingPoint();
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newLeadPanelContainer]);
 
   if (!salesman) {
     return (
@@ -984,21 +1011,21 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
               </button>
             </div>
             <input
-              className="mb-3 w-full rounded border px-3 py-2 text-sm text-neutral-700"
+              className="mb-3 w-full rounded border px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400"
               placeholder={pendingPoint.loadingAddress ? "Looking up address…" : "Address (edit if needed)"}
               value={pendingPoint.address ?? ""}
               disabled={pendingPoint.loadingAddress}
               onChange={(e) => setPendingPoint((p) => (p ? { ...p, address: e.target.value } : p))}
             />
             <input
-              className="mb-3 w-full rounded border px-3 py-2"
+              className="mb-3 w-full rounded border px-3 py-2 text-neutral-900 placeholder:text-neutral-400"
               placeholder="Business / customer name — defaults to the street address"
               value={dealName}
               onChange={(e) => setDealName(e.target.value)}
               autoFocus
             />
             <textarea
-              className="mb-3 w-full rounded border px-3 py-2 text-sm"
+              className="mb-3 w-full rounded border px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400"
               placeholder="Note"
               rows={2}
               value={dealNote}
