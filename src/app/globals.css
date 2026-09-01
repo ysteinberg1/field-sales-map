@@ -24,3 +24,16 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Google Maps InfoWindow (the pin popup): we render our own close button
+   and our own card padding, so Google's default chrome — its own tiny
+   close button plus the extra padding around the content — has to go,
+   or you get a visible "box inside a box" seam and two close buttons. */
+.gm-ui-hover-effect {
+  display: none !important;
+}
+.gm-style-iw-c,
+.gm-style-iw-d {
+  padding: 0 !important;
+  overflow: visible !important;
+}

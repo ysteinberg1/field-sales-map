@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { setOptions, importLibrary } from "@googlemaps/js-api-loader";
-import { MarkerClusterer, type Renderer as ClusterRenderer } from "@googlemaps/markerclusterer";
+import { MarkerClusterer, SuperClusterAlgorithm, type Renderer as ClusterRenderer } from "@googlemaps/markerclusterer";
 import { statusIconDataUri } from "@/lib/statusIcons";
 import { sourceBadgeDataUri } from "@/lib/sourceIcons";
 
@@ -216,6 +216,9 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const visibleSalesmenRef = useRef<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
   const renderPinsRef = useRef<((pins: Pin[]) => void) | null>(null);
   const deleteLeadRef = useRef<((pin: Pin, marker: google.maps.Marker) => void) | null>(null);
+  const pendingPointRef = useRef<{ lat: number; lng: number } | null>(null);
+  const pendingPanelRef = useRef<HTMLDivElement | null>(null);
+  const pendingPanelOverlayRef = useRef<google.maps.OverlayView | null>(null);
 
   const [salesman, setSalesman] = useState<string | null>(null);
   const [pendingPoint, setPendingPoint] = useState<{
@@ -233,14 +236,20 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const [showNearby, setShowNearby] = useState(false);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [visibleBoards, setVisibleBoards] = useState<Set<string>>(new Set(ALL_BOARDS));
-  const [boardFilterOpen, setBoardFilterOpen] = useState(false);
   const [visibleSalesmen, setVisibleSalesmen] = useState<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
-  const [salesmanFilterOpen, setSalesmanFilterOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("fsm_salesman");
     if (saved) setSalesman(saved);
   }, []);
+
+  useEffect(() => {
+    pendingPointRef.current = pendingPoint ? { lat: pendingPoint.lat, lng: pendingPoint.lng } : null;
+    // Google only calls an OverlayView's draw() automatically when the
+    // map's own view changes — react to the panel opening/closing too.
+    pendingPanelOverlayRef.current?.draw();
+  }, [pendingPoint]);
 
   useEffect(() => {
     showNearbyRef.current = showNearby;
@@ -288,6 +297,33 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       mapRef.current = map;
       const infoWindow = new InfoWindow();
       infoWindowRef.current = infoWindow;
+
+      // Anchors the "New lead" panel to the actual clicked/tapped point on
+      // the map, the same way the pin popup is anchored — Google calls
+      // draw() on every pan/zoom, so this keeps it locked to the spot
+      // instead of sitting in a fixed screen corner.
+      class PendingPanelOverlay extends google.maps.OverlayView {
+        onAdd() {}
+        onRemove() {}
+        draw() {
+          const panel = pendingPanelRef.current;
+          if (!panel) return;
+          const point = pendingPointRef.current;
+          if (!point) {
+            panel.style.display = "none";
+            return;
+          }
+          const projection = this.getProjection();
+          const pixel = projection?.fromLatLngToDivPixel(new google.maps.LatLng(point.lat, point.lng));
+          if (!pixel) return;
+          panel.style.display = "block";
+          panel.style.left = `${pixel.x}px`;
+          panel.style.top = `${pixel.y}px`;
+        }
+      }
+      const pendingPanelOverlay = new PendingPanelOverlay();
+      pendingPanelOverlay.setMap(map);
+      pendingPanelOverlayRef.current = pendingPanelOverlay;
 
       // Search bar (Places Autocomplete).
       if (searchInputRef.current) {
@@ -354,7 +390,12 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         activeMarker = marker;
         activeMarkerIcon = currentIcon;
         const baseSize = currentIcon.scaledSize?.width ?? ICON_PX;
-        marker.setIcon({ ...currentIcon, scaledSize: new google.maps.Size(baseSize * 1.25, baseSize * 1.25) });
+        const bigSize = baseSize * 1.3;
+        marker.setIcon({
+          ...currentIcon,
+          scaledSize: new google.maps.Size(bigSize, bigSize),
+          anchor: new google.maps.Point(bigSize / 2, bigSize / 2),
+        });
         marker.setZIndex(9999);
 
         const meta = BOARD_META[pin.board];
@@ -362,7 +403,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         const iconUrl = iconUrlForPin(pin);
 
         infoWindow.setContent(
-          `<div style="min-width:230px;border-left:4px solid ${meta.color};padding-left:10px">
+          `<div style="min-width:230px;border-radius:8px;overflow:hidden;background:white;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px">
              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
                <div style="display:flex;align-items:center;gap:8px;min-width:0">
                  <img src="${iconUrl}" width="30" height="30" style="flex-shrink:0" />
@@ -420,7 +461,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                 : `<span style="font-size:12px;color:#a3a3a3;font-style:italic">Synced from Monday</span>`;
 
             infoWindow.setContent(
-              `<div style="min-width:230px;border-left:4px solid ${meta.color};padding-left:10px">
+              `<div style="min-width:230px;border-radius:8px;overflow:hidden;background:white;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px">
                  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
                    <div style="display:flex;align-items:center;gap:8px;min-width:0">
                      <img src="${iconUrl}" width="30" height="30" style="flex-shrink:0" />
@@ -500,6 +541,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             icon: {
               url: iconUrlForPin(pin),
               scaledSize: new google.maps.Size(ICON_PX, ICON_PX),
+              anchor: new google.maps.Point(ICON_PX / 2, ICON_PX / 2),
             },
           });
           marker.addListener("click", () => showPinInfo(pin, marker));
@@ -516,14 +558,14 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
 
         const renderer: ClusterRenderer = {
           render: ({ count, position }) => {
-            // Ripple look (matches SalesRabbit's real map): a dense core
-            // circle carrying the count, surrounded by a distinctly more
-            // translucent outer ring — not one flat single-opacity fill.
-            // Both radii grow with the pin count (log scale so it doesn't
-            // blow up on a 1000+ cluster).
-            const outer = Math.min(160, Math.max(44, 36 + 34 * Math.log10(count + 1)));
-            const core = outer * 0.54;
-            const fontSize = Math.min(20, Math.max(11, 11 + 3 * Math.log10(count + 1)));
+            // A solid core circle with a thin translucent ribbon just
+            // outside its edge — not a second, much-larger halo circle.
+            // Kept deliberately compact: this renders hundreds of times
+            // on screen at once, so anything oversized compounds fast.
+            const core = Math.min(62, Math.max(26, 30 + 12 * Math.log10(count + 1)));
+            const ribbon = 3;
+            const outer = core + ribbon * 2 + 4;
+            const fontSize = Math.min(15, Math.max(10, 9 + 2.5 * Math.log10(count + 1)));
             const half = outer / 2;
             const clusterMarker = new Marker({
               position,
@@ -532,8 +574,8 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                   "data:image/svg+xml;utf8," +
                   encodeURIComponent(
                     `<svg xmlns="http://www.w3.org/2000/svg" width="${outer}" height="${outer}">` +
-                      `<circle cx="${half}" cy="${half}" r="${half}" fill="#b4b2a9" fill-opacity="0.22"/>` +
-                      `<circle cx="${half}" cy="${half}" r="${core / 2}" fill="#b4b2a9" fill-opacity="0.75" stroke="white" stroke-opacity="0.5"/>` +
+                      `<circle cx="${half}" cy="${half}" r="${core / 2 + ribbon}" fill="none" stroke="#8a887f" stroke-opacity="0.35" stroke-width="${ribbon}"/>` +
+                      `<circle cx="${half}" cy="${half}" r="${core / 2}" fill="#5f5e5a" fill-opacity="0.88" stroke="white" stroke-opacity="0.6" stroke-width="1"/>` +
                       `<text x="${half}" y="${half + fontSize * 0.35}" font-family="sans-serif" font-size="${fontSize}" font-weight="500" fill="white" text-anchor="middle">${count}</text>` +
                     `</svg>`
                   ),
@@ -551,7 +593,15 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           },
         };
 
-        clustererRef.current = new MarkerClusterer({ map, markers, renderer });
+        // Default grid radius (60px) left way too many small clusters
+        // sitting next to each other unmerged on a dense map — widen it
+        // so nearby pins actually combine into one bubble.
+        clustererRef.current = new MarkerClusterer({
+          map,
+          markers,
+          renderer,
+          algorithm: new SuperClusterAlgorithm({ radius: 140, maxZoom: 17 }),
+        });
       };
       renderPinsRef.current = renderPins;
 
@@ -581,6 +631,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       const openNewLeadPanel = async (latLng: google.maps.LatLng) => {
         const lat = latLng.lat();
         const lng = latLng.lng();
+        map.panTo(latLng);
         pendingMarkerRef.current?.setMap(null);
         pendingMarkerRef.current = new Marker({
           position: { lat, lng },
@@ -697,25 +748,35 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
 
           if (!showNearbyRef.current) return; // toggled off while the search was in flight
           nearbyMarkersRef.current.forEach((m) => m.setMap(null));
+          // A distinct violet dot (not used anywhere else in the badge
+          // system) with a small store-front glyph, so nearby businesses
+          // read as clearly different from tracked leads at a glance.
+          const NEARBY_SIZE = 18;
+          const NEARBY_ICON = {
+            url:
+              "data:image/svg+xml;utf8," +
+              encodeURIComponent(
+                `<svg xmlns="http://www.w3.org/2000/svg" width="${NEARBY_SIZE}" height="${NEARBY_SIZE}">` +
+                  `<circle cx="9" cy="9" r="8" fill="#7c6fdb" stroke="white" stroke-width="1.5"/>` +
+                  `<path d="M5.5 8.2V12a.6.6 0 0 0 .6.6h1.3V9.8h3v2.8h1.3a.6.6 0 0 0 .6-.6V8.2M5 8l4-2.6L13 8" stroke="white" stroke-width="1" fill="none" stroke-linecap="round" stroke-linejoin="round"/>` +
+                `</svg>`
+              ),
+            scaledSize: new google.maps.Size(NEARBY_SIZE, NEARBY_SIZE),
+            anchor: new google.maps.Point(NEARBY_SIZE / 2, NEARBY_SIZE / 2),
+          };
           nearbyMarkersRef.current = results.map((biz) => {
             const marker = new Marker({
               position: { lat: biz.lat, lng: biz.lng },
               map,
-              icon: {
-                url:
-                  "data:image/svg+xml;utf8," +
-                  encodeURIComponent(
-                    `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14"><circle cx="7" cy="7" r="6" fill="#9ca3af" stroke="white" stroke-width="1.5"/></svg>`
-                  ),
-                scaledSize: new google.maps.Size(14, 14),
-              },
+              icon: NEARBY_ICON,
               zIndex: 1,
             });
             marker.addListener("click", () => {
               infoWindow.setContent(
-                `<div style="min-width:160px">
+                `<div style="min-width:180px;border-radius:8px;background:white;padding:12px;border-left:4px solid #7c6fdb">
+                   <div style="font-size:10.5px;font-weight:600;letter-spacing:0.03em;text-transform:uppercase;color:#7c6fdb;margin-bottom:3px">Nearby business</div>
                    <div style="font-weight:600;color:#171717">${biz.name}</div>
-                   ${biz.address ? `<div style="font-size:13px;color:#737373">${biz.address}</div>` : ""}
+                   ${biz.address ? `<div style="font-size:13px;color:#737373;margin-top:2px">${biz.address}</div>` : ""}
                  </div>`
               );
               infoWindow.open({ map, anchor: marker });
@@ -821,11 +882,13 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       };
       pinsRef.current = [...pinsRef.current, newPin];
       if (visibleBoardsRef.current.has(newPin.board) && visibleSalesmenRef.current.has(newPin.salesman)) {
+        const newPinSize = window.innerWidth >= 1024 ? 40 : 30;
         const marker = new google.maps.Marker({
           position: { lat: newPin.lat, lng: newPin.lng },
           icon: {
             url: iconUrlForPin(newPin),
-            scaledSize: new google.maps.Size(window.innerWidth >= 1024 ? 40 : 30, window.innerWidth >= 1024 ? 40 : 30),
+            scaledSize: new google.maps.Size(newPinSize, newPinSize),
+            anchor: new google.maps.Point(newPinSize / 2, newPinSize / 2),
           },
         });
         markersRef.current.set(`${newPin.board}:${newPin.itemId}`, marker);
@@ -909,79 +972,97 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         </button>
       </div>
 
-      <button
-        onClick={() => setShowTerritory((v) => !v)}
-        className={`absolute right-3 top-28 z-10 rounded-lg px-3 py-2 text-sm font-medium shadow-lg sm:top-14 ${
-          showTerritory ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
-        }`}
-      >
-        Territory
-      </button>
-
-      <button
-        onClick={() => setShowNearby((v) => !v)}
-        className={`absolute right-3 top-40 z-10 rounded-lg px-3 py-2 text-sm font-medium shadow-lg sm:top-24 ${
-          showNearby ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
-        }`}
-      >
-        Nearby
-      </button>
-
-      <div className="absolute right-3 top-52 z-10 sm:top-36">
+      <div className="absolute right-3 top-28 z-10 sm:top-14">
         <button
-          onClick={() => setBoardFilterOpen((v) => !v)}
-          className={`rounded-lg px-3 py-2 text-sm font-medium shadow-lg ${
-            boardFilterOpen ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
+          onClick={() => setFiltersOpen((v) => !v)}
+          className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium shadow-lg ${
+            filtersOpen ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
           }`}
         >
-          Boards
+          Filters
+          <span className={`text-[10px] transition-transform ${filtersOpen ? "rotate-180" : ""}`}>▾</span>
         </button>
-        {boardFilterOpen && (
-          <div className="absolute right-0 mt-1 w-44 rounded-lg bg-white p-2 shadow-lg">
-            {ALL_BOARDS.map((board) => (
-              <label
-                key={board}
-                className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
+        {filtersOpen && (
+          <div className="absolute right-0 mt-1 w-56 divide-y divide-neutral-100 rounded-xl bg-white p-1 shadow-lg">
+            <div className="space-y-0.5 p-1.5">
+              <div className="px-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
+                Layers
+              </div>
+              <button
+                onClick={() => setShowTerritory((v) => !v)}
+                className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50"
               >
-                <input
-                  type="checkbox"
-                  checked={visibleBoards.has(board)}
-                  onChange={() => toggleBoard(board)}
-                />
-                {BOARD_LABELS[board]}
-              </label>
-            ))}
-          </div>
-        )}
-      </div>
+                Territory
+                <span
+                  className={`relative h-5 w-9 rounded-full transition-colors ${showTerritory ? "bg-neutral-900" : "bg-neutral-200"}`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${showTerritory ? "translate-x-4" : "translate-x-0.5"}`}
+                  />
+                </span>
+              </button>
+              <button
+                onClick={() => setShowNearby((v) => !v)}
+                className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50"
+              >
+                Nearby businesses
+                <span
+                  className={`relative h-5 w-9 rounded-full transition-colors ${showNearby ? "bg-neutral-900" : "bg-neutral-200"}`}
+                >
+                  <span
+                    className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${showNearby ? "translate-x-4" : "translate-x-0.5"}`}
+                  />
+                </span>
+              </button>
+            </div>
 
-      <div className="absolute right-3 top-64 z-10 sm:top-48">
-        <button
-          onClick={() => setSalesmanFilterOpen((v) => !v)}
-          className={`rounded-lg px-3 py-2 text-sm font-medium shadow-lg ${
-            salesmanFilterOpen ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
-          }`}
-        >
-          Salesmen
-        </button>
-        {salesmanFilterOpen && (
-          <div className="absolute right-0 mt-1 w-44 rounded-lg bg-white p-2 shadow-lg">
-            {SALESMAN_FILTERS.map((s) => (
-              <label
-                key={s}
-                className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-100"
-              >
-                <input type="checkbox" checked={visibleSalesmen.has(s)} onChange={() => toggleSalesman(s)} />
-                {s}
-              </label>
-            ))}
+            <div className="space-y-0.5 p-1.5">
+              <div className="px-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
+                Boards
+              </div>
+              {ALL_BOARDS.map((board) => (
+                <label
+                  key={board}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50"
+                >
+                  <input type="checkbox" checked={visibleBoards.has(board)} onChange={() => toggleBoard(board)} />
+                  {BOARD_LABELS[board]}
+                </label>
+              ))}
+            </div>
+
+            <div className="space-y-0.5 p-1.5">
+              <div className="px-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
+                Salesmen
+              </div>
+              {SALESMAN_FILTERS.map((s) => (
+                <label
+                  key={s}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50"
+                >
+                  <input type="checkbox" checked={visibleSalesmen.has(s)} onChange={() => toggleSalesman(s)} />
+                  {s}
+                </label>
+              ))}
+            </div>
           </div>
         )}
       </div>
 
       {pendingPoint && (
-        <div className="absolute inset-x-0 bottom-0 z-10 rounded-t-2xl bg-white p-4 shadow-lg sm:inset-x-auto sm:bottom-3 sm:left-3 sm:w-80 sm:rounded-2xl">
-          <div className="mb-1 text-sm text-neutral-500">New lead — {salesman}</div>
+        <div ref={pendingPanelRef} className="absolute z-20 w-72 max-w-[90vw] -translate-x-1/2 -translate-y-full pb-3">
+        <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-lg">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-sm font-medium text-neutral-500">New lead — {salesman}</div>
+            <button
+              type="button"
+              aria-label="Cancel"
+              className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md border border-neutral-200 text-neutral-500"
+              onClick={cancelPendingPoint}
+            >
+              ×
+            </button>
+          </div>
           <input
             className="mb-3 w-full rounded border px-3 py-2 text-sm text-neutral-700"
             placeholder={pendingPoint.loadingAddress ? "Looking up address…" : "Address (edit if needed)"}
@@ -1037,18 +1118,15 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
               </>
             )}
           </div>
-          <div className="flex gap-2">
-            <button className="flex-1 rounded bg-neutral-200 py-2" onClick={cancelPendingPoint}>
-              Cancel
-            </button>
-            <button
-              className="flex-1 rounded bg-green-600 py-2 text-white disabled:opacity-50"
-              disabled={(!dealName && !pendingPoint.address) || saving || pendingPoint.loadingAddress}
-              onClick={submitDeal}
-            >
-              {saving ? "Saving…" : "Create Lead"}
-            </button>
-          </div>
+          <button
+            className="w-full rounded bg-green-600 py-2 text-white disabled:opacity-50"
+            disabled={(!dealName && !pendingPoint.address) || saving || pendingPoint.loadingAddress}
+            onClick={submitDeal}
+          >
+            {saving ? "Saving…" : "Create Lead"}
+          </button>
+        </div>
+        <div className="mx-auto -mt-1.5 h-3 w-3 rotate-45 border-b border-r border-neutral-200 bg-white" />
         </div>
       )}
     </div>
