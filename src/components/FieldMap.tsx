@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { setOptions, importLibrary } from "@googlemaps/js-api-loader";
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer as ClusterRenderer } from "@googlemaps/markerclusterer";
 import { statusIconDataUri } from "@/lib/statusIcons";
@@ -734,20 +735,20 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         const lat = latLng.lat();
         const lng = latLng.lng();
         map.panTo(latLng);
-        // Nudge the map up so the dropped pin lands above the new-lead
-        // panel instead of hidden behind it — the panel docks near the
-        // bottom of the screen.
-        const containerEl = mapContainer.current;
-        if (containerEl) {
-          map.panBy(0, Math.min(containerEl.clientHeight * 0.4, 260));
-        }
         pendingMarkerRef.current?.setMap(null);
         pendingMarkerRef.current = new Marker({
           position: { lat, lng },
           map,
           icon: { url: "http://maps.google.com/mapfiles/ms/icons/green-dot.png" },
         });
-        setPendingPoint({ lat, lng, address: null, loadingAddress: true });
+        // flushSync: this fires from a plain setTimeout during an
+        // in-progress touch, and on some mobile browsers a React update
+        // made there can sit uncommitted until the touch ends instead of
+        // painting right away. Forcing a synchronous commit is the fix for
+        // "the panel only shows up once I lift my finger".
+        flushSync(() => {
+          setPendingPoint({ lat, lng, address: null, loadingAddress: true });
+        });
         let address: string | null = null;
         try {
           const res = await fetch(
@@ -811,11 +812,15 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       // Belt-and-suspenders for touch: once the map decides a touch is a
       // pan, it handles the gesture internally and stops firing "mousemove"
       // map events, so the listener above never sees the movement and the
-      // long-press timer can survive an actual pan. Native touchmove on the
-      // container always fires regardless of what the map does with the
-      // gesture, so listen there directly (capture phase, so it runs before
-      // the map's own touch handling can swallow it) as the real guard.
-      const touchCancelTarget = mapContainer.current;
+      // long-press timer can survive an actual pan. Registering on the map
+      // div itself wasn't enough — Maps attaches its own capture-phase
+      // touch handling to that same div when it initializes, and since it
+      // registers first, its listener runs first regardless of our own
+      // {capture:true} and can stop the event before we ever see it.
+      // Registering on `document` instead guarantees we run first: capture
+      // phase visits ancestors before the target, and document is an
+      // ancestor of everything, so this fires before Maps' handler no
+      // matter which was attached first.
       const onNativeTouchMove = (e: TouchEvent) => {
         if (!pressOrigin) return;
         const t = e.touches[0];
@@ -824,9 +829,9 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         const dy = t.clientY - pressOrigin.y;
         if (Math.hypot(dx, dy) > DRAG_CANCEL_PX) cancelPress();
       };
-      touchCancelTarget?.addEventListener("touchmove", onNativeTouchMove, { capture: true, passive: true });
-      touchCancelTarget?.addEventListener("touchend", cancelPress, { capture: true });
-      touchCancelTarget?.addEventListener("touchcancel", cancelPress, { capture: true });
+      document.addEventListener("touchmove", onNativeTouchMove, { capture: true, passive: true });
+      document.addEventListener("touchend", cancelPress, { capture: true });
+      document.addEventListener("touchcancel", cancelPress, { capture: true });
 
       map.addListener("rightclick", (e: google.maps.MapMouseEvent) => {
         if (e.latLng) void openNewLeadPanel(e.latLng);
@@ -994,6 +999,33 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingPoint !== null]);
 
+  // Pan the map so the dropped pin clears the new-lead panel instead of
+  // sitting behind it. Done here (after the panel has actually rendered)
+  // rather than as a fixed guess at pan-time, because the panel's real
+  // height — and therefore how far up the pin needs to move — depends on
+  // viewport size and can't be known before layout happens. Right after
+  // panTo centers the pin, it sits at the map container's vertical
+  // midpoint; if the panel's top edge would cover that point, pan up by
+  // just enough to clear it plus a small margin — no more.
+  useEffect(() => {
+    if (!pendingPoint) return;
+    const map = mapRef.current;
+    const containerEl = mapContainer.current;
+    const panelEl = pendingPanelRef.current;
+    if (!map || !containerEl || !panelEl) return;
+    const raf = requestAnimationFrame(() => {
+      const containerRect = containerEl.getBoundingClientRect();
+      const panelRect = panelEl.getBoundingClientRect();
+      const MARGIN = 16;
+      const markerY = containerRect.height / 2;
+      const panelTopY = panelRect.top - containerRect.top;
+      const shift = markerY - (panelTopY - MARGIN);
+      if (shift > 0) map.panBy(0, shift);
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingPoint !== null]);
+
   // Same click-outside-to-close for the Options dropdown — it otherwise
   // only closed by pressing the button again.
   useEffect(() => {
@@ -1050,7 +1082,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         </button>
       </div>
 
-      <div ref={optionsMenuRef} className="absolute right-3 top-3 z-10">
+      <div ref={optionsMenuRef} className="absolute right-3 top-16 z-10 sm:top-3">
         <button
           onClick={() => setFiltersOpen((v) => !v)}
           className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium shadow-lg ${
