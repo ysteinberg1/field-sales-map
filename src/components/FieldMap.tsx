@@ -210,6 +210,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const searchInputRef = useRef<HTMLInputElement>(null);
   const visibleBoardsRef = useRef<Set<string>>(new Set(ALL_BOARDS));
   const visibleSalesmenRef = useRef<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
+  const showOverlappingRef = useRef(false);
   const renderPinsRef = useRef<((pins: Pin[]) => void) | null>(null);
   const searchGoRef = useRef<(() => void) | null>(null);
   const showPinInfoRef = useRef<((pin: Pin, marker: google.maps.Marker) => void) | null>(null);
@@ -237,6 +238,11 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [visibleBoards, setVisibleBoards] = useState<Set<string>>(new Set(ALL_BOARDS));
   const [visibleSalesmen, setVisibleSalesmen] = useState<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
+  // Cross-board dedup was removed from the data itself (see monday.ts), so
+  // two boards can now carry the same real-world address. Default to
+  // hiding the lower-tier duplicate — it's clutter, not new information —
+  // with this as an escape hatch to see every board's record at a spot.
+  const [showOverlapping, setShowOverlapping] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   useEffect(() => {
@@ -581,14 +587,26 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           if (group) group.push(pin);
           else coordGroups.set(key, [pin]);
         }
+        // "Show overlapping leads" off (the default): collapse each
+        // coordinate group down to its highest-precedence (lowest tier)
+        // pin instead of jittering every duplicate apart.
+        const displayPins: Pin[] = [];
         const renderPosition = new Map<Pin, { lat: number; lng: number }>();
         for (const group of coordGroups.values()) {
+          if (!showOverlappingRef.current && group.length > 1) {
+            const winner = group.reduce((best, p) => (p.tier < best.tier ? p : best));
+            displayPins.push(winner);
+            renderPosition.set(winner, { lat: winner.lat, lng: winner.lng });
+            continue;
+          }
           if (group.length === 1) {
+            displayPins.push(group[0]);
             renderPosition.set(group[0], { lat: group[0].lat, lng: group[0].lng });
             continue;
           }
           const JITTER_DEGREES = 0.00009; // ~9m
           group.forEach((pin, i) => {
+            displayPins.push(pin);
             const angle = (2 * Math.PI * i) / group.length;
             renderPosition.set(pin, {
               lat: pin.lat + JITTER_DEGREES * Math.cos(angle),
@@ -597,7 +615,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           });
         }
 
-        const markers = visible.map((pin) => {
+        const markers = displayPins.map((pin) => {
           const marker = new Marker({
             position: renderPosition.get(pin)!,
             icon: {
@@ -757,7 +775,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         pressTimer = setTimeout(() => {
           pressTimer = null;
           if (pressLatLng) void openNewLeadPanel(pressLatLng);
-        }, 750); // was 500 — popping up on a normal tap/hold was too easy
+        }, 1500); // was 500, then 750 — still too easy to trigger
       });
       map.addListener("mousemove", (e: google.maps.MapMouseEvent) => {
         if (!pressOrigin || !e.domEvent) return;
@@ -775,6 +793,15 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
 
       map.addListener("rightclick", (e: google.maps.MapMouseEvent) => {
         if (e.latLng) void openNewLeadPanel(e.latLng);
+      });
+
+      // Clicking empty map area closes the pin-details popup, same as the
+      // new-lead panel's click-outside-to-close. Marker clicks don't bubble
+      // into this (they're a separate event), so this only fires for clicks
+      // that aren't on a pin.
+      map.addListener("click", () => {
+        infoWindow.close();
+        clearActiveMarkerHighlight();
       });
 
     })();
@@ -801,6 +828,11 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
     visibleSalesmenRef.current = visibleSalesmen;
     renderPinsRef.current?.(pinsRef.current);
   }, [visibleSalesmen]);
+
+  useEffect(() => {
+    showOverlappingRef.current = showOverlapping;
+    renderPinsRef.current?.(pinsRef.current);
+  }, [showOverlapping]);
 
   const toggleSalesman = (salesmanBucket: SalesmanBucket) => {
     setVisibleSalesmen((prev) => {
@@ -949,7 +981,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       <img
         src="/provident-logo.png"
         alt="Provident LED"
-        className="absolute bottom-3 left-3 z-10 h-14 w-auto drop-shadow-lg"
+        className="absolute bottom-11 left-3 z-10 h-14 w-auto drop-shadow-lg"
       />
 
       <div className="absolute left-3 right-3 top-3 z-10 flex overflow-hidden rounded-lg bg-white shadow-lg sm:right-auto sm:w-72">
@@ -1016,6 +1048,14 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                 <input type="checkbox" checked={showTerritory} onChange={() => setShowTerritory((v) => !v)} />
                 Territory
               </label>
+              <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-neutral-700 hover:bg-neutral-50">
+                <input
+                  type="checkbox"
+                  checked={showOverlapping}
+                  onChange={() => setShowOverlapping((v) => !v)}
+                />
+                Show overlapping leads
+              </label>
             </div>
 
             <div className="space-y-0.5 p-1.5">
@@ -1054,7 +1094,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       {pendingPoint && (
           <div
             ref={pendingPanelRef}
-            className="fixed inset-x-3 bottom-[15%] z-30 mx-auto w-auto max-w-96 rounded-xl border-l-4 border-green-600 bg-white p-3 pl-2.5 shadow-xl sm:inset-x-auto sm:right-3"
+            className="fixed inset-x-3 bottom-[15%] z-30 mx-auto w-auto max-w-96 rounded-xl border-l-4 border-green-600 bg-white p-3 pl-2.5 shadow-xl"
             style={{ fontWeight: 400 }}
           >
             <div className="mb-3 flex items-center justify-between">
