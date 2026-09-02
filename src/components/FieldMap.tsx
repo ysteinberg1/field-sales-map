@@ -219,8 +219,9 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   // The new-lead form docks to a fixed spot near the bottom of the
   // viewport (see JSX) rather than anchoring to the tapped point — on a
   // phone-sized screen, anchoring at the click point could land the form
-  // underneath the top Streets/Satellite/Filters controls.
+  // underneath the top Options control.
   const pendingPanelRef = useRef<HTMLDivElement | null>(null);
+  const optionsMenuRef = useRef<HTMLDivElement | null>(null);
 
   const [salesman, setSalesman] = useState<string | null>(null);
   const [pendingPoint, setPendingPoint] = useState<{
@@ -389,6 +390,13 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         // the popup is open, so the tapped pin is unmistakable.
         clearActiveMarkerHighlight();
         map.panTo(marker.getPosition()!);
+        // The popup card opens anchored above the pin — push the pin down
+        // toward the bottom of the screen so the card has room to grow
+        // upward without its top getting cut off by the browser chrome.
+        const containerEl = mapContainer.current;
+        if (containerEl) {
+          map.panBy(0, -Math.min(containerEl.clientHeight * 0.28, 180));
+        }
         activeMarker = marker;
         activeMarkerIcon = marker.getIcon() as google.maps.Icon;
         const iconUrl = iconUrlForPin(pin);
@@ -726,6 +734,13 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         const lat = latLng.lat();
         const lng = latLng.lng();
         map.panTo(latLng);
+        // Nudge the map up so the dropped pin lands above the new-lead
+        // panel instead of hidden behind it — the panel docks near the
+        // bottom of the screen.
+        const containerEl = mapContainer.current;
+        if (containerEl) {
+          map.panBy(0, Math.min(containerEl.clientHeight * 0.4, 260));
+        }
         pendingMarkerRef.current?.setMap(null);
         pendingMarkerRef.current = new Marker({
           position: { lat, lng },
@@ -792,6 +807,26 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       });
       map.addListener("mouseup", cancelPress);
       map.addListener("dragstart", cancelPress); // map itself started panning — definitely not a long-press
+
+      // Belt-and-suspenders for touch: once the map decides a touch is a
+      // pan, it handles the gesture internally and stops firing "mousemove"
+      // map events, so the listener above never sees the movement and the
+      // long-press timer can survive an actual pan. Native touchmove on the
+      // container always fires regardless of what the map does with the
+      // gesture, so listen there directly (capture phase, so it runs before
+      // the map's own touch handling can swallow it) as the real guard.
+      const touchCancelTarget = mapContainer.current;
+      const onNativeTouchMove = (e: TouchEvent) => {
+        if (!pressOrigin) return;
+        const t = e.touches[0];
+        if (!t) return;
+        const dx = t.clientX - pressOrigin.x;
+        const dy = t.clientY - pressOrigin.y;
+        if (Math.hypot(dx, dy) > DRAG_CANCEL_PX) cancelPress();
+      };
+      touchCancelTarget?.addEventListener("touchmove", onNativeTouchMove, { capture: true, passive: true });
+      touchCancelTarget?.addEventListener("touchend", cancelPress, { capture: true });
+      touchCancelTarget?.addEventListener("touchcancel", cancelPress, { capture: true });
 
       map.addListener("rightclick", (e: google.maps.MapMouseEvent) => {
         if (e.latLng) void openNewLeadPanel(e.latLng);
@@ -959,6 +994,18 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingPoint !== null]);
 
+  // Same click-outside-to-close for the Options dropdown — it otherwise
+  // only closed by pressing the button again.
+  useEffect(() => {
+    if (!filtersOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (optionsMenuRef.current?.contains(e.target as Node)) return;
+      setFiltersOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [filtersOpen]);
+
   if (!salesman) {
     return (
       <div className="flex h-dvh flex-col items-center justify-center gap-4 bg-neutral-100 p-6">
@@ -1003,45 +1050,50 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         </button>
       </div>
 
-      <div className="absolute right-3 top-16 z-10 flex overflow-hidden rounded-lg shadow-lg sm:top-3">
-        <button
-          onClick={() => setMapType("roadmap")}
-          className={`px-3 py-2 text-sm font-medium ${
-            mapType === "roadmap" ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
-          }`}
-        >
-          Streets
-        </button>
-        <button
-          onClick={() => setMapType("satellite")}
-          className={`px-3 py-2 text-sm font-medium ${
-            mapType === "satellite" ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
-          }`}
-        >
-          Satellite
-        </button>
-        <button
-          onClick={() => setMapType("hybrid")}
-          className={`px-3 py-2 text-sm font-medium ${
-            mapType === "hybrid" ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
-          }`}
-        >
-          Hybrid
-        </button>
-      </div>
-
-      <div className="absolute right-3 top-28 z-10 sm:top-14">
+      <div ref={optionsMenuRef} className="absolute right-3 top-3 z-10">
         <button
           onClick={() => setFiltersOpen((v) => !v)}
           className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium shadow-lg ${
             filtersOpen ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
           }`}
         >
-          Filters
+          Options
           <span className={`text-[10px] transition-transform ${filtersOpen ? "rotate-180" : ""}`}>▾</span>
         </button>
         {filtersOpen && (
           <div className="absolute right-0 mt-1 w-56 divide-y divide-neutral-100 rounded-xl bg-white p-1 shadow-lg">
+            <div className="space-y-0.5 p-1.5">
+              <div className="px-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
+                Map type
+              </div>
+              <div className="flex overflow-hidden rounded-lg border border-neutral-200">
+                <button
+                  onClick={() => setMapType("roadmap")}
+                  className={`flex-1 px-2 py-1.5 text-sm font-medium ${
+                    mapType === "roadmap" ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
+                  }`}
+                >
+                  Streets
+                </button>
+                <button
+                  onClick={() => setMapType("satellite")}
+                  className={`flex-1 px-2 py-1.5 text-sm font-medium ${
+                    mapType === "satellite" ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
+                  }`}
+                >
+                  Satellite
+                </button>
+                <button
+                  onClick={() => setMapType("hybrid")}
+                  className={`flex-1 px-2 py-1.5 text-sm font-medium ${
+                    mapType === "hybrid" ? "bg-neutral-900 text-white" : "bg-white text-neutral-700"
+                  }`}
+                >
+                  Hybrid
+                </button>
+              </div>
+            </div>
+
             <div className="space-y-0.5 p-1.5">
               <div className="px-1.5 pb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
                 Layers
@@ -1096,11 +1148,11 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       {pendingPoint && (
           <div
             ref={pendingPanelRef}
-            className="fixed inset-x-3 bottom-[15%] z-30 mx-auto w-auto max-w-96 rounded-xl border-l-4 border-green-600 bg-white p-3 pl-2.5 shadow-xl"
+            className="fixed inset-x-3 bottom-6 z-30 mx-auto w-auto max-w-96 rounded-xl border-l-4 border-green-600 bg-white p-3 pl-2.5 shadow-xl"
             style={{ fontWeight: 400 }}
           >
             <div className="mb-3 flex items-center justify-between">
-              <div className="text-sm font-medium text-neutral-500">New lead — {salesman}</div>
+              <div className="text-sm font-medium text-neutral-500">New lead</div>
               <button
                 type="button"
                 aria-label="Cancel"
@@ -1119,7 +1171,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             />
             <input
               className="mb-3 w-full rounded border px-3 py-2 text-neutral-900 placeholder:text-neutral-400"
-              placeholder="Business / customer name — defaults to the street address"
+              placeholder="Business / customer name"
               value={dealName}
               onChange={(e) => setDealName(e.target.value)}
               autoFocus
