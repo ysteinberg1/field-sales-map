@@ -736,10 +736,23 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
 
       // Drop a new pin: long-press on touch (a held-still press picks up the
       // address; a held-and-dragged press is a pan and must not), right-click
-      // on desktop — holding a mouse button "still" for 500ms is unreliable,
-      // hand jitter alone drifts past the threshold. Google's map fires
-      // mousedown/mouseup/dragstart uniformly for touch and mouse input.
-      const openNewLeadPanel = async (latLng: google.maps.LatLng) => {
+      // on desktop.
+      //
+      // Sequenced deliberately, per Yoel: the pin should appear right where
+      // the finger was (not silently at the eventual centered spot), THEN
+      // the map should visibly glide it clear of where the panel docks,
+      // and only once that settles should the panel itself appear —
+      // instead of everything happening at once, which read as an
+      // unexplained jump. panBy (not panTo) is used for that glide because
+      // it's always a smooth animation regardless of distance, where panTo
+      // can snap instantly for a large enough pan.
+      //
+      // PANEL_CLEARANCE_PX is a fixed estimate of the panel's rendered
+      // height (it doesn't vary — same four fields and a button every
+      // time) since the pan has to happen before the panel exists in the
+      // DOM to measure.
+      const PANEL_CLEARANCE_PX = 340;
+      const openNewLeadPanel = (latLng: google.maps.LatLng, pressPixel?: { x: number; y: number }) => {
         // Only one popup open at a time — creating a new lead closes any
         // pin details popup instead of leaving both open.
         infoWindow.close();
@@ -747,41 +760,62 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
 
         const lat = latLng.lat();
         const lng = latLng.lng();
-        map.panTo(latLng);
         pendingMarkerRef.current?.setMap(null);
         pendingMarkerRef.current = new Marker({
           position: { lat, lng },
           map,
           icon: { url: "http://maps.google.com/mapfiles/ms/icons/green-dot.png" },
         });
-        // flushSync: this fires from a plain setTimeout during an
-        // in-progress touch, and on some mobile browsers a React update
-        // made there can sit uncommitted until the touch ends instead of
-        // painting right away. Forcing a synchronous commit is the fix for
-        // "the panel only shows up once I lift my finger".
-        flushSync(() => {
-          setPendingPoint({ lat, lng, address: null, loadingAddress: true });
-        });
-        let address: string | null = null;
-        try {
-          const res = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=${lat}&lon=${lng}`,
-            { headers: { Accept: "application/json" } }
-          );
-          const data = await res.json();
-          // Build from the structured fields, not display_name — display_name
-          // leads with the nearest named place/business, not the actual
-          // street address.
-          const a = data.address ?? {};
-          const street = [a.house_number, a.road].filter(Boolean).join(" ");
-          const city = a.city ?? a.town ?? a.village ?? a.hamlet ?? a.suburb;
-          address = [street, city, a.state, a.postcode].filter(Boolean).join(", ") || null;
-        } catch {
-          address = null;
+
+        // Kick the reverse-geocode lookup off now so it overlaps with the
+        // pan animation instead of adding its own wait on top of it.
+        const addressPromise = (async () => {
+          try {
+            const res = await fetch(
+              `https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=${lat}&lon=${lng}`,
+              { headers: { Accept: "application/json" } }
+            );
+            const data = await res.json();
+            // Build from the structured fields, not display_name —
+            // display_name leads with the nearest named place/business,
+            // not the actual street address.
+            const a = data.address ?? {};
+            const street = [a.house_number, a.road].filter(Boolean).join(" ");
+            const city = a.city ?? a.town ?? a.village ?? a.hamlet ?? a.suburb;
+            return [street, city, a.state, a.postcode].filter(Boolean).join(", ") || null;
+          } catch {
+            return null;
+          }
+        })();
+
+        const revealPanel = () => {
+          // flushSync: this can fire from a plain setTimeout during an
+          // in-progress touch, and on some mobile browsers a React update
+          // made there can sit uncommitted until the touch ends instead of
+          // painting right away.
+          flushSync(() => {
+            setPendingPoint({ lat, lng, address: null, loadingAddress: true });
+          });
+          void addressPromise.then((address) => {
+            setPendingPoint((p) => (p && p.lat === lat && p.lng === lng ? { ...p, address, loadingAddress: false } : p));
+          });
+        };
+
+        const containerEl = mapContainer.current;
+        if (containerEl && pressPixel) {
+          const rect = containerEl.getBoundingClientRect();
+          const pressX = pressPixel.x - rect.left;
+          const pressY = pressPixel.y - rect.top;
+          const targetX = rect.width / 2;
+          const targetY = Math.max(90, rect.height - PANEL_CLEARANCE_PX - 24);
+          google.maps.event.addListenerOnce(map, "idle", revealPanel);
+          map.panBy(pressX - targetX, pressY - targetY);
+        } else {
+          map.panTo(latLng);
+          revealPanel();
         }
-        setPendingPoint((p) => (p && p.lat === lat && p.lng === lng ? { ...p, address, loadingAddress: false } : p));
       };
-      openNewLeadPanelRef.current = openNewLeadPanel;
+      openNewLeadPanelRef.current = (latLng) => openNewLeadPanel(latLng);
 
       // Long-press-to-drop-a-pin, take 4. Every earlier version of this
       // routed the "press started" and/or "press moved" signal through the
@@ -834,7 +868,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           const latLng = projection.fromContainerPixelToLatLng(
             new google.maps.Point(pressOrigin.x - rect.left, pressOrigin.y - rect.top)
           );
-          if (latLng) void openNewLeadPanel(latLng);
+          if (latLng) openNewLeadPanel(latLng, pressOrigin);
         }, 1500);
       };
       const onPressMove = (e: MouseEvent | TouchEvent) => {
@@ -855,7 +889,10 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       document.addEventListener("mouseup", cancelPress, { capture: true });
 
       map.addListener("rightclick", (e: google.maps.MapMouseEvent) => {
-        if (e.latLng) void openNewLeadPanel(e.latLng);
+        if (!e.latLng) return;
+        const domEvent = e.domEvent as MouseEvent | undefined;
+        const pixel = domEvent ? { x: domEvent.clientX, y: domEvent.clientY } : undefined;
+        openNewLeadPanel(e.latLng, pixel);
       });
 
       // Clicking empty map area closes the pin-details popup, same as the
@@ -1017,33 +1054,6 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
     // boolean), not the pendingPoint object itself — that object changes
     // on every keystroke in the address field, which would otherwise tear
     // down and resubscribe this listener on every character typed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingPoint !== null]);
-
-  // Pan the map so the dropped pin clears the new-lead panel instead of
-  // sitting behind it. Done here (after the panel has actually rendered)
-  // rather than as a fixed guess at pan-time, because the panel's real
-  // height — and therefore how far up the pin needs to move — depends on
-  // viewport size and can't be known before layout happens. Right after
-  // panTo centers the pin, it sits at the map container's vertical
-  // midpoint; if the panel's top edge would cover that point, pan up by
-  // just enough to clear it plus a small margin — no more.
-  useEffect(() => {
-    if (!pendingPoint) return;
-    const map = mapRef.current;
-    const containerEl = mapContainer.current;
-    const panelEl = pendingPanelRef.current;
-    if (!map || !containerEl || !panelEl) return;
-    const raf = requestAnimationFrame(() => {
-      const containerRect = containerEl.getBoundingClientRect();
-      const panelRect = panelEl.getBoundingClientRect();
-      const MARGIN = 16;
-      const markerY = containerRect.height / 2;
-      const panelTopY = panelRect.top - containerRect.top;
-      const shift = markerY - (panelTopY - MARGIN);
-      if (shift > 0) map.panBy(0, shift);
-    });
-    return () => cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingPoint !== null]);
 
