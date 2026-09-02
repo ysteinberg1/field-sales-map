@@ -287,6 +287,19 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       const infoWindow = new InfoWindow();
       infoWindowRef.current = infoWindow;
 
+      // A do-nothing overlay purely to get at getProjection(), which is
+      // the documented way to convert a screen pixel to a LatLng without
+      // going through the map's own mousedown/mousemove events — see the
+      // long-press handling below, which needs this because those events
+      // turned out not to be trustworthy for this.
+      class ProjectionHelper extends google.maps.OverlayView {
+        onAdd() {}
+        draw() {}
+        onRemove() {}
+      }
+      const projectionHelper = new ProjectionHelper();
+      projectionHelper.setMap(map);
+
       // Search bar (Places Autocomplete).
       if (searchInputRef.current) {
         const autocomplete = new google.maps.places.Autocomplete(searchInputRef.current, {
@@ -770,10 +783,27 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       };
       openNewLeadPanelRef.current = openNewLeadPanel;
 
+      // Long-press-to-drop-a-pin, take 4. Every earlier version of this
+      // routed the "press started" and/or "press moved" signal through the
+      // Maps JS API's own translated mousedown/mousemove/dragstart events,
+      // on the theory that they mirror the real touch. They don't reliably
+      // — Maps owns the map div's actual gesture handling, decides
+      // internally what counts as a pan, and the translated events it
+      // exposes don't consistently reflect that in time to cancel our
+      // timer. So this no longer asks Maps anything about the gesture at
+      // all: it listens to raw touchstart/touchmove/touchend (and
+      // mousedown/mousemove/mouseup for desktop) directly on `document`
+      // with {capture:true}, which is the one guarantee the DOM actually
+      // makes — a capture-phase listener on an ancestor always runs before
+      // any listener on a descendant, including whatever Maps attaches to
+      // the map div itself, no matter which was registered first. The only
+      // thing still asked of Maps is a pixel-to-LatLng conversion
+      // (via projectionHelper above), and only once, at the very end,
+      // after we've already decided on our own that this was a real
+      // long-press.
       const DRAG_CANCEL_PX = 6;
       let pressTimer: ReturnType<typeof setTimeout> | null = null;
       let pressOrigin: { x: number; y: number } | null = null;
-      let pressLatLng: google.maps.LatLng | null = null;
 
       const cancelPress = () => {
         if (pressTimer) clearTimeout(pressTimer);
@@ -781,57 +811,48 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         pressOrigin = null;
       };
 
-      map.addListener("mousedown", (e: google.maps.MapMouseEvent) => {
-        if (!e.latLng || !e.domEvent) return;
-        const domEvent = e.domEvent as MouseEvent | TouchEvent;
-        const point =
-          "touches" in domEvent && domEvent.touches.length
-            ? { x: domEvent.touches[0].clientX, y: domEvent.touches[0].clientY }
-            : { x: (domEvent as MouseEvent).clientX, y: (domEvent as MouseEvent).clientY };
+      const pointFromEvent = (e: MouseEvent | TouchEvent): { x: number; y: number } | null => {
+        if ("touches" in e) {
+          const t = e.touches[0] ?? e.changedTouches[0];
+          return t ? { x: t.clientX, y: t.clientY } : null;
+        }
+        return { x: e.clientX, y: e.clientY };
+      };
+
+      const onPressStart = (e: MouseEvent | TouchEvent) => {
+        const containerEl = mapContainer.current;
+        if (!containerEl || !(e.target instanceof Node) || !containerEl.contains(e.target)) return;
+        if ("button" in e && e.button !== 0) return; // right-click has its own handler below
+        const point = pointFromEvent(e);
+        if (!point) return;
         pressOrigin = point;
-        pressLatLng = e.latLng;
         pressTimer = setTimeout(() => {
           pressTimer = null;
-          if (pressLatLng) void openNewLeadPanel(pressLatLng);
-        }, 1500); // was 500, then 750 — still too easy to trigger
-      });
-      map.addListener("mousemove", (e: google.maps.MapMouseEvent) => {
-        if (!pressOrigin || !e.domEvent) return;
-        const domEvent = e.domEvent as MouseEvent | TouchEvent;
-        const point =
-          "touches" in domEvent && domEvent.touches.length
-            ? { x: domEvent.touches[0].clientX, y: domEvent.touches[0].clientY }
-            : { x: (domEvent as MouseEvent).clientX, y: (domEvent as MouseEvent).clientY };
+          const projection = projectionHelper.getProjection();
+          if (!projection || !pressOrigin) return;
+          const rect = containerEl.getBoundingClientRect();
+          const latLng = projection.fromContainerPixelToLatLng(
+            new google.maps.Point(pressOrigin.x - rect.left, pressOrigin.y - rect.top)
+          );
+          if (latLng) void openNewLeadPanel(latLng);
+        }, 1500);
+      };
+      const onPressMove = (e: MouseEvent | TouchEvent) => {
+        if (!pressOrigin) return;
+        const point = pointFromEvent(e);
+        if (!point) return;
         const dx = point.x - pressOrigin.x;
         const dy = point.y - pressOrigin.y;
         if (Math.hypot(dx, dy) > DRAG_CANCEL_PX) cancelPress();
-      });
-      map.addListener("mouseup", cancelPress);
-      map.addListener("dragstart", cancelPress); // map itself started panning — definitely not a long-press
-
-      // Belt-and-suspenders for touch: once the map decides a touch is a
-      // pan, it handles the gesture internally and stops firing "mousemove"
-      // map events, so the listener above never sees the movement and the
-      // long-press timer can survive an actual pan. Registering on the map
-      // div itself wasn't enough — Maps attaches its own capture-phase
-      // touch handling to that same div when it initializes, and since it
-      // registers first, its listener runs first regardless of our own
-      // {capture:true} and can stop the event before we ever see it.
-      // Registering on `document` instead guarantees we run first: capture
-      // phase visits ancestors before the target, and document is an
-      // ancestor of everything, so this fires before Maps' handler no
-      // matter which was attached first.
-      const onNativeTouchMove = (e: TouchEvent) => {
-        if (!pressOrigin) return;
-        const t = e.touches[0];
-        if (!t) return;
-        const dx = t.clientX - pressOrigin.x;
-        const dy = t.clientY - pressOrigin.y;
-        if (Math.hypot(dx, dy) > DRAG_CANCEL_PX) cancelPress();
       };
-      document.addEventListener("touchmove", onNativeTouchMove, { capture: true, passive: true });
+
+      document.addEventListener("touchstart", onPressStart, { capture: true, passive: true });
+      document.addEventListener("touchmove", onPressMove, { capture: true, passive: true });
       document.addEventListener("touchend", cancelPress, { capture: true });
       document.addEventListener("touchcancel", cancelPress, { capture: true });
+      document.addEventListener("mousedown", onPressStart, { capture: true });
+      document.addEventListener("mousemove", onPressMove, { capture: true });
+      document.addEventListener("mouseup", cancelPress, { capture: true });
 
       map.addListener("rightclick", (e: google.maps.MapMouseEvent) => {
         if (e.latLng) void openNewLeadPanel(e.latLng);
