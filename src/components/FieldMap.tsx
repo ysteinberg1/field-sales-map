@@ -313,12 +313,21 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           });
         };
         searchGoRef.current = goToTypedAddress;
-        searchInputRef.current.addEventListener("keydown", (e) => {
-          if (e.key !== "Enter") return;
-          // Give the Autocomplete widget's own Enter handling (a
-          // highlighted suggestion) first crack before falling back.
-          window.setTimeout(goToTypedAddress, 150);
-        });
+        // Capture phase: Google's own Autocomplete widget attaches its
+        // own bubble-phase keydown handler on this same input to swallow
+        // Enter for its dropdown navigation, which meant this listener
+        // (attached the normal way) never ran at all when Enter was
+        // pressed. Capture fires before that, so it always gets a chance.
+        searchInputRef.current.addEventListener(
+          "keydown",
+          (e) => {
+            if (e.key !== "Enter") return;
+            // Give the widget's own Enter handling (a highlighted
+            // suggestion) first crack before falling back to geocoding.
+            window.setTimeout(goToTypedAddress, 150);
+          },
+          { capture: true }
+        );
       }
 
       // Center on the salesman's live location if they allow it.
