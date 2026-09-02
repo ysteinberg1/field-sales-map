@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { list, put } from "@vercel/blob";
 import { deleteItem } from "@/lib/monday";
 import type { Pin } from "@/lib/pins";
+import { logEvent } from "@/lib/activityLog";
 
 const BLOB_PATHNAME = "pins.json";
 
@@ -17,6 +18,7 @@ export async function POST(request: Request) {
   }
 
   await deleteItem(itemId);
+  await logEvent({ type: "lead_deleted", itemId, board });
 
   try {
     const { blobs } = await list({ prefix: BLOB_PATHNAME, limit: 1 });

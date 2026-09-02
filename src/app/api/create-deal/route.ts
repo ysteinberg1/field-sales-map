@@ -3,6 +3,7 @@ import { list, put } from "@vercel/blob";
 import { BOARDS, createItem } from "@/lib/monday";
 import { normalizeSalesman, upsertPin } from "@/lib/pins";
 import type { Pin } from "@/lib/pins";
+import { logEvent } from "@/lib/activityLog";
 
 // Landing board for new pins created from the field. Change to "deals" here
 // if the "create in SalesRabbit, promote later" decision changes.
@@ -46,6 +47,8 @@ export async function POST(request: Request) {
   }
 
   const itemId = await createItem(board.id, name, columnValues, SALESRABBIT_NEW_LEAD_GROUP);
+
+  await logEvent({ type: "lead_created", itemId, name, salesman: salesman ?? null, status: status ?? null, address: address ?? null });
 
   // Push straight into the shared cache so every salesman sees this pin on
   // their next load, not just the one who created it (that part already

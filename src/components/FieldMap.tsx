@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { setOptions, importLibrary } from "@googlemaps/js-api-loader";
 import { MarkerClusterer, SuperClusterAlgorithm, type Renderer as ClusterRenderer } from "@googlemaps/markerclusterer";
 import { statusIconDataUri } from "@/lib/statusIcons";
@@ -212,10 +211,15 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const visibleBoardsRef = useRef<Set<string>>(new Set(ALL_BOARDS));
   const visibleSalesmenRef = useRef<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
   const renderPinsRef = useRef<((pins: Pin[]) => void) | null>(null);
+  const searchGoRef = useRef<(() => void) | null>(null);
   const showPinInfoRef = useRef<((pin: Pin, marker: google.maps.Marker) => void) | null>(null);
   const openNewLeadPanelRef = useRef<((latLng: google.maps.LatLng) => void) | null>(null);
   const deleteLeadRef = useRef<((pin: Pin, marker: google.maps.Marker) => void) | null>(null);
-  const newLeadInfoWindowRef = useRef<google.maps.InfoWindow | null>(null);
+  // The new-lead form docks to a fixed spot near the bottom of the
+  // viewport (see JSX) rather than anchoring to the tapped point — on a
+  // phone-sized screen, anchoring at the click point could land the form
+  // underneath the top Streets/Satellite/Filters controls.
+  const pendingPanelRef = useRef<HTMLDivElement | null>(null);
 
   const [salesman, setSalesman] = useState<string | null>(null);
   const [pendingPoint, setPendingPoint] = useState<{
@@ -234,12 +238,6 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const [visibleBoards, setVisibleBoards] = useState<Set<string>>(new Set(ALL_BOARDS));
   const [visibleSalesmen, setVisibleSalesmen] = useState<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
   const [filtersOpen, setFiltersOpen] = useState(false);
-  // The new-lead form's actual DOM home, once Google's own InfoWindow has
-  // created it and anchored it to the clicked point — the form itself is
-  // portaled into this div so React keeps full control over its inputs
-  // while Google handles all the positioning (same proven mechanism as
-  // the pin popup, instead of a hand-rolled screen-position calculation).
-  const [newLeadPanelContainer, setNewLeadPanelContainer] = useState<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("fsm_salesman");
@@ -263,6 +261,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         importLibrary("places"),
         importLibrary("geometry"),
         importLibrary("core"),
+        importLibrary("geocoding"),
       ]);
       if (cancelled || !mapContainer.current) return;
 
@@ -279,26 +278,46 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       const infoWindow = new InfoWindow();
       infoWindowRef.current = infoWindow;
 
-      // The new-lead form's own InfoWindow — reuses Google's proven
-      // anchor/positioning logic (same as the pin popup) instead of a
-      // hand-rolled screen-position calculation, which kept landing the
-      // panel at (0,0) instead of near the click. React portals the
-      // actual form JSX into this InfoWindow's content div once it opens.
-      const newLeadInfoWindow = new InfoWindow();
-      newLeadInfoWindowRef.current = newLeadInfoWindow;
-
       // Search bar (Places Autocomplete).
       if (searchInputRef.current) {
         const autocomplete = new google.maps.places.Autocomplete(searchInputRef.current, {
           fields: ["geometry"],
         });
         autocomplete.bindTo("bounds", map);
+        const SEARCH_ZOOM = 18; // street/building level, not just the general area
         autocomplete.addListener("place_changed", () => {
           const place = autocomplete.getPlace();
           if (place.geometry?.location) {
             map.panTo(place.geometry.location);
-            map.setZoom(15);
+            map.setZoom(SEARCH_ZOOM);
           }
+        });
+
+        // Hitting Enter only works today if a dropdown suggestion is
+        // already highlighted — typing an address and pressing Enter
+        // without arrowing down to a suggestion did nothing. Fall back to
+        // geocoding the raw typed text so Enter (or the go button) always
+        // goes somewhere.
+        const geocoder = new google.maps.Geocoder();
+        const goToTypedAddress = () => {
+          const input = searchInputRef.current;
+          const typed = input?.value?.trim();
+          if (!typed) return;
+          const place = autocomplete.getPlace();
+          if (place?.geometry?.location) return; // a real suggestion already handled it
+          geocoder.geocode({ address: typed }, (results, status) => {
+            if (status === "OK" && results?.[0]?.geometry?.location) {
+              map.panTo(results[0].geometry.location);
+              map.setZoom(SEARCH_ZOOM);
+            }
+          });
+        };
+        searchGoRef.current = goToTypedAddress;
+        searchInputRef.current.addEventListener("keydown", (e) => {
+          if (e.key !== "Enter") return;
+          // Give the Autocomplete widget's own Enter handling (a
+          // highlighted suggestion) first crack before falling back.
+          window.setTimeout(goToTypedAddress, 150);
         });
       }
 
@@ -324,7 +343,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
 
       // Slightly bigger pin icons on desktop — a phone screen stays tight so
       // more pins fit without crowding, but a desktop has room to spare.
-      const ICON_PX = window.innerWidth >= 1024 ? 40 : 30;
+      const ICON_PX = window.innerWidth >= 1024 ? 40 : 38;
 
       // Bigger icon on the currently-open pin — reset when the popup closes.
       let activeMarker: google.maps.Marker | null = null;
@@ -346,10 +365,8 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       const showPinInfo = (pin: Pin, marker: google.maps.Marker) => {
         // Only one popup open at a time — opening a pin's details closes
         // any in-progress "new lead" panel instead of leaving both open.
-        newLeadInfoWindow.close();
         pendingMarkerRef.current?.setMap(null);
         pendingMarkerRef.current = null;
-        setNewLeadPanelContainer(null);
         setPendingPoint(null);
 
         // Center the map on the pin and enlarge its icon slightly while
@@ -436,8 +453,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                 ? `<button id="fm-popup-delete" style="font-size:12px;color:#b23b34;background:none;border:none;padding:0;cursor:pointer">Delete lead</button>`
                 : `<span style="font-size:12px;color:#a3a3a3;font-style:italic">Synced from Monday</span>`;
 
-            infoWindow.setContent(
-              `<div style="min-width:230px;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px;font-weight:400">
+            const mainView = `<div style="min-width:230px;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px;font-weight:400">
                  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
                    <div style="display:flex;align-items:center;gap:8px;min-width:0">
                      <img src="${iconUrl}" width="30" height="30" style="flex-shrink:0" />
@@ -459,16 +475,44 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                    <div style="color:#a3a3a3">Owned by <b style="color:#404040;font-weight:500">${ownerName ?? "—"}</b></div>
                    ${deleteBtn}
                  </div>
-               </div>`
-            );
-            google.maps.event.addListenerOnce(infoWindow, "domready", () => {
-              document.getElementById("fm-popup-close")?.addEventListener("click", () => infoWindow.close());
-              document.getElementById("fm-popup-delete")?.addEventListener("click", () => {
-                if (!window.confirm(`Delete "${full.name}"? This removes it from Monday and the map.`)) return;
-                deleteLeadRef.current?.(pin, marker);
-                infoWindow.close();
+               </div>`;
+
+            // A styled confirm step in place of the browser's native
+            // window.confirm — swaps the same card's content rather than
+            // popping an ugly, unstyleable OS dialog.
+            const confirmView = `<div style="min-width:230px;border-left:4px solid #b23b34;padding:12px 12px 12px 10px;font-weight:400">
+                 <div style="font-weight:600;color:#171717">Delete this lead?</div>
+                 <div style="margin-top:4px;font-size:13px;color:#737373;line-height:1.5">${full.name} will be removed from Monday and the map. This can't be undone.</div>
+                 <div style="margin-top:12px;display:flex;gap:8px">
+                   <button id="fm-popup-cancel-delete" style="flex:1;padding:7px 0;border-radius:6px;border:1px solid #e5e5e5;background:white;color:#404040;font-size:13px;cursor:pointer">Cancel</button>
+                   <button id="fm-popup-confirm-delete" style="flex:1;padding:7px 0;border-radius:6px;border:none;background:#b23b34;color:white;font-size:13px;font-weight:500;cursor:pointer">Delete</button>
+                 </div>
+               </div>`;
+
+            const bindMainView = () => {
+              google.maps.event.addListenerOnce(infoWindow, "domready", () => {
+                document.getElementById("fm-popup-close")?.addEventListener("click", () => infoWindow.close());
+                document.getElementById("fm-popup-delete")?.addEventListener("click", () => {
+                  infoWindow.setContent(confirmView);
+                  bindConfirmView();
+                });
               });
-            });
+            };
+            const bindConfirmView = () => {
+              google.maps.event.addListenerOnce(infoWindow, "domready", () => {
+                document.getElementById("fm-popup-cancel-delete")?.addEventListener("click", () => {
+                  infoWindow.setContent(mainView);
+                  bindMainView();
+                });
+                document.getElementById("fm-popup-confirm-delete")?.addEventListener("click", () => {
+                  deleteLeadRef.current?.(pin, marker);
+                  infoWindow.close();
+                });
+              });
+            };
+
+            infoWindow.setContent(mainView);
+            bindMainView();
           });
       };
       showPinInfoRef.current = showPinInfo;
@@ -616,7 +660,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           // means individual pins (including duplicates, now separated by
           // the jitter above) show up at a normal "zoomed into a
           // neighborhood" level instead.
-          algorithm: new SuperClusterAlgorithm({ radius: 170, maxZoom: 16 }),
+          algorithm: new SuperClusterAlgorithm({ radius: 170, maxZoom: 14 }),
         });
       };
       renderPinsRef.current = renderPins;
@@ -659,10 +703,6 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           map,
           icon: { url: "http://maps.google.com/mapfiles/ms/icons/green-dot.png" },
         });
-        const container = document.createElement("div");
-        newLeadInfoWindow.setContent(container);
-        newLeadInfoWindow.open({ map, anchor: pendingMarkerRef.current });
-        setNewLeadPanelContainer(container);
         setPendingPoint({ lat, lng, address: null, loadingAddress: true });
         let address: string | null = null;
         try {
@@ -708,7 +748,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         pressTimer = setTimeout(() => {
           pressTimer = null;
           if (pressLatLng) void openNewLeadPanel(pressLatLng);
-        }, 500);
+        }, 750); // was 500 — popping up on a normal tap/hold was too easy
       });
       map.addListener("mousemove", (e: google.maps.MapMouseEvent) => {
         if (!pressOrigin || !e.domEvent) return;
@@ -820,7 +860,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       };
       pinsRef.current = [...pinsRef.current, newPin];
       if (visibleBoardsRef.current.has(newPin.board) && visibleSalesmenRef.current.has(newPin.salesman)) {
-        const newPinSize = window.innerWidth >= 1024 ? 40 : 30;
+        const newPinSize = window.innerWidth >= 1024 ? 40 : 38;
         const marker = new google.maps.Marker({
           position: { lat: newPin.lat, lng: newPin.lng },
           icon: {
@@ -842,8 +882,6 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       }
     }
 
-    newLeadInfoWindowRef.current?.close();
-    setNewLeadPanelContainer(null);
     setPendingPoint(null);
     setDealName("");
     setDealNote("");
@@ -853,8 +891,6 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const cancelPendingPoint = () => {
     pendingMarkerRef.current?.setMap(null);
     pendingMarkerRef.current = null;
-    newLeadInfoWindowRef.current?.close();
-    setNewLeadPanelContainer(null);
     setPendingPoint(null);
     setDealName("");
     setDealNote("");
@@ -865,16 +901,20 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   // tapping its own × — ignores right-clicks so opening a new lead
   // elsewhere on the map isn't treated as "click away to cancel this one".
   useEffect(() => {
-    if (!newLeadPanelContainer) return;
+    if (!pendingPoint) return;
     const handler = (e: MouseEvent) => {
       if (e.button === 2) return;
-      if (newLeadPanelContainer.contains(e.target as Node)) return;
+      if (pendingPanelRef.current?.contains(e.target as Node)) return;
       cancelPendingPoint();
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
+    // Deliberately keyed on whether a point is pending at all (a stable
+    // boolean), not the pendingPoint object itself — that object changes
+    // on every keystroke in the address field, which would otherwise tear
+    // down and resubscribe this listener on every character typed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [newLeadPanelContainer]);
+  }, [pendingPoint !== null]);
 
   if (!salesman) {
     return (
@@ -903,12 +943,22 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         className="absolute bottom-3 left-3 z-10 h-14 w-auto drop-shadow-lg"
       />
 
-      <input
-        ref={searchInputRef}
-        type="text"
-        placeholder="Search an address or business…"
-        className="absolute left-3 right-3 top-3 z-10 rounded-lg border-0 bg-white px-3 py-2 text-sm text-neutral-900 shadow-lg placeholder:text-neutral-400 sm:right-auto sm:w-72"
-      />
+      <div className="absolute left-3 right-3 top-3 z-10 flex overflow-hidden rounded-lg bg-white shadow-lg sm:right-auto sm:w-72">
+        <input
+          ref={searchInputRef}
+          type="text"
+          placeholder="Search an address or business…"
+          className="min-w-0 flex-1 border-0 px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:outline-none"
+        />
+        <button
+          type="button"
+          aria-label="Go"
+          onClick={() => searchGoRef.current?.()}
+          className="flex w-11 flex-shrink-0 items-center justify-center border-l border-neutral-100 text-neutral-500"
+        >
+          &#9654;
+        </button>
+      </div>
 
       <div className="absolute right-3 top-16 z-10 flex overflow-hidden rounded-lg shadow-lg sm:top-3">
         <button
@@ -992,11 +1042,10 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
         )}
       </div>
 
-      {pendingPoint &&
-        newLeadPanelContainer &&
-        createPortal(
+      {pendingPoint && (
           <div
-            className="w-72 max-w-[80vw] border-l-4 border-green-600 bg-white p-3 pl-2.5"
+            ref={pendingPanelRef}
+            className="fixed inset-x-3 bottom-[15%] z-30 mx-auto w-auto max-w-96 rounded-xl border-l-4 border-green-600 bg-white p-3 pl-2.5 shadow-xl sm:inset-x-auto sm:right-3"
             style={{ fontWeight: 400 }}
           >
             <div className="mb-3 flex items-center justify-between">
@@ -1072,9 +1121,8 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             >
               {saving ? "Saving…" : "Create Lead"}
             </button>
-          </div>,
-          newLeadPanelContainer
-        )}
+          </div>
+      )}
     </div>
   );
 }

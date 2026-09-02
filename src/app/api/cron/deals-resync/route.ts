@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { list, put } from "@vercel/blob";
 import { buildPinDataset, buildDealsPatch } from "@/lib/pins";
 import type { Pin } from "@/lib/pins";
+import { logEvent } from "@/lib/activityLog";
 
 export const maxDuration = 30;
 
@@ -38,6 +39,8 @@ export async function GET(request: Request) {
     addRandomSuffix: false,
     allowOverwrite: true,
   });
+
+  await logEvent({ type: "nightly_sync", count: pins.length });
 
   return NextResponse.json({ ok: true, count: pins.length });
 }

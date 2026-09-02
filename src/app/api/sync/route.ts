@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { put } from "@vercel/blob";
 import { buildPinDataset } from "@/lib/pins";
+import { logEvent } from "@/lib/activityLog";
 
 export const maxDuration = 60;
 
@@ -12,6 +13,8 @@ export async function POST() {
     addRandomSuffix: false,
     allowOverwrite: true,
   });
+
+  await logEvent({ type: "manual_sync", count: pins.length });
 
   return NextResponse.json({ ok: true, count: pins.length });
 }

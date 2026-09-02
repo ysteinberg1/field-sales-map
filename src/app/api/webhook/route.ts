@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { list, put } from "@vercel/blob";
 import { BOARDS, BoardKey, fetchItemDetail } from "@/lib/monday";
 import { columnIdsFor, itemToPin, Pin } from "@/lib/pins";
+import { logEvent } from "@/lib/activityLog";
 
 const BLOB_PATHNAME = "pins.json";
 
@@ -50,6 +51,8 @@ export async function POST(request: Request) {
     addRandomSuffix: false,
     allowOverwrite: true,
   });
+
+  await logEvent({ type: "webhook_update", board: boardKey, itemId, name: newPin?.name ?? null });
 
   return NextResponse.json({ ok: true });
 }
