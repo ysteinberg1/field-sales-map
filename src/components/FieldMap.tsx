@@ -210,7 +210,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const searchInputRef = useRef<HTMLInputElement>(null);
   const visibleBoardsRef = useRef<Set<string>>(new Set(ALL_BOARDS));
   const visibleSalesmenRef = useRef<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
-  const showOverlappingRef = useRef(false);
+  const showOverlappingRef = useRef(true);
   const renderPinsRef = useRef<((pins: Pin[]) => void) | null>(null);
   const searchGoRef = useRef<(() => void) | null>(null);
   const showPinInfoRef = useRef<((pin: Pin, marker: google.maps.Marker) => void) | null>(null);
@@ -239,10 +239,11 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const [visibleBoards, setVisibleBoards] = useState<Set<string>>(new Set(ALL_BOARDS));
   const [visibleSalesmen, setVisibleSalesmen] = useState<Set<SalesmanBucket>>(new Set(SALESMAN_FILTERS));
   // Cross-board dedup was removed from the data itself (see monday.ts), so
-  // two boards can now carry the same real-world address. Default to
-  // hiding the lower-tier duplicate — it's clutter, not new information —
-  // with this as an escape hatch to see every board's record at a spot.
-  const [showOverlapping, setShowOverlapping] = useState(false);
+  // two boards can now carry the same real-world address. Defaults to
+  // showing every one of them (Yoel's call 2026-09-02); unchecking
+  // collapses each overlapping spot down to the highest-precedence board's
+  // pin only.
+  const [showOverlapping, setShowOverlapping] = useState(true);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
   useEffect(() => {
@@ -478,7 +479,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                      </div>
                    </div>
                    <div style="display:flex;gap:6px;flex-shrink:0">
-                     <a href="${mondayUrl}" target="_blank" rel="noopener noreferrer" aria-label="Open in Monday" style="width:22px;height:22px;border-radius:6px;border:1px solid #e5e5e5;background:white;color:#737373;display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:12px">↗</a>
+                     <a href="${mondayUrl}" target="_blank" rel="noopener noreferrer" aria-label="Open in Monday" style="width:22px;height:22px;border-radius:6px;border:1px solid #e5e5e5;background:white;display:flex;align-items:center;justify-content:center;text-decoration:none;padding:3px;box-sizing:border-box"><img src="/monday-logo.png" alt="" width="16" height="16" style="object-fit:contain" /></a>
                      <button id="fm-popup-close" aria-label="Close" style="width:22px;height:22px;border-radius:6px;border:1px solid #e5e5e5;background:white;color:#737373;cursor:pointer;font-size:14px;line-height:1">×</button>
                    </div>
                  </div>
@@ -587,9 +588,10 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
           if (group) group.push(pin);
           else coordGroups.set(key, [pin]);
         }
-        // "Show overlapping leads" off (the default): collapse each
-        // coordinate group down to its highest-precedence (lowest tier)
-        // pin instead of jittering every duplicate apart.
+        // "Show overlapping leads" unchecked: collapse each coordinate
+        // group down to its highest-precedence (lowest tier) pin instead
+        // of jittering every duplicate apart. Checked (the default) keeps
+        // the jitter-apart behavior below.
         const displayPins: Pin[] = [];
         const renderPosition = new Map<Pin, { lat: number; lng: number }>();
         for (const group of coordGroups.values()) {

@@ -27,17 +27,28 @@ Each board has its own location column and its own relevant detail columns:
 |---|---|---|---|
 | Deals | 1558281108 | `location_mkv04x3y` ("Facility Address") | Salesman `color_mkv0qrwq`, Stage `deal_stage`, Sales notes `long_text_mm6khzqt` |
 | Old Cashflow | 5102612766 | `location_mm6gzddh` | Address `text_mm6dbpxy`, Salesman `color_mm6d1vdk` |
-| Pipedrive Archive | 5102614839 | `location_mm6kpjx2` ("Dedup Location" — NOT the plain `location_mm6g6z07`) | Stage `status`, Salesman `color_mm6dw3r2`, Deal Created `date4` |
-| SalesRabbit Leads | 5099562913 | `location_mm6kf638` ("Dedup Location") | Lead Owner `color_mm4v4hed`, Status `color_mm4vht3r`, Note `long_text_mm4v6hdv`, Created `date_mm6mgd2r` |
+| Pipedrive Archive | 5102614839 | `location_mm6g6z07` (plain Location — NOT `location_mm6kpjx2` "Dedup Location") | Stage `status`, Salesman `color_mm6dw3r2`, Deal Created `date4` |
+| SalesRabbit Leads | 5099562913 | `location_mm6g8ayt` (plain Location — NOT `location_mm6kf638` "Dedup Location") | Lead Owner `color_mm4v4hed`, Status `color_mm4vht3r`, Note `long_text_mm4v6hdv`, Created `date_mm6mgd2r` |
 
-**Why "Dedup Location" and not the raw Location column on Pipedrive/SalesRabbit:**
-A prior migration pass deduplicated addresses across all four boards. Tier
-precedence is **Deals > Old Cashflow > Pipedrive > SalesRabbit** — if an
-address already exists on a higher-tier board, it does NOT get a pin on the
-lower-tier board (it's a duplicate, not unprocessed data). The "Dedup
-Location" columns hold coordinates only for addresses that are genuinely new
-at that tier. An item on Pipedrive/SalesRabbit with no Dedup Location value
-is deliberately excluded from the map — that's correct behavior, not a bug.
+**Why the raw Location column and not "Dedup Location" (changed 2026-09):**
+An earlier migration pass deduplicated addresses across all four boards, and
+this app originally read the "Dedup Location" columns so a lower-tier board
+would have no coordinate (and no pin) wherever a higher-tier board already
+had that address. That hid real information — e.g. a Pipedrive "not
+qualified" note sitting at the same address as a live Deals record would
+just disappear — so the app was switched to the raw Location column on
+every board; every item with a location gets a pin now, full stop. The
+"Dedup Location" columns still exist on Pipedrive/SalesRabbit but the app no
+longer reads them.
+
+Each pin still carries its source board's `tier` (**Deals=0 > Old
+Cashflow=1 > Pipedrive=2 > SalesRabbit=3**, lower wins) as metadata. It's
+used only for the **"Show overlapping leads"** checkbox in the Filters
+dropdown (`src/components/FieldMap.tsx`) — checked (the default) shows every
+board's pin even when several land on the same address; unchecked collapses
+each overlapping spot down to just the highest-tier pin. This is a
+display-time filter only, computed client-side from the already-fetched
+pins — it does not affect what's fetched, stored, or synced.
 
 ## Salesmen
 Six-person picker, matched to SalesRabbit's Lead Owner labels (edited to
@@ -55,12 +66,15 @@ Currently weekly full resync via cron (webhook route exists at
 `/api/webhook` but has never been registered with Monday, so live
 webhook-based sync isn't active yet).
 
-## Known open items (as of last session)
+## Known open items (as of 2026-09-02)
 - Register the SalesRabbit board webhook so sync happens live, not just weekly
-- Add real app icons (icon-192.png / icon-512.png referenced in manifest.json don't exist — harmless 404 in console)
-- Address search box needs a Google Places API key/billing decision — not yet made
 - Pin icon design pass — currently a plain colored dot per source board
 - Unresolved bug: on Yoel's work computer (managed Chrome profile with extensions), the map sometimes loads blank with no pins and a console error about a non-JS MIME type on a module script — suspected cause is a filter/monitoring tool (Teckloq) on that machine mangling JS chunk responses. `/api/pins` and `/api/sync` work correctly when hit directly; the mystery is specific to that one browser/machine. Diagnostic logging (`[field-map]`, `[pins]` prefixes) was added to isolate this if it recurs.
+
+Resolved since the note above was written: app icons exist
+(icon-192.png/icon-512.png) and the PWA installs standalone on iOS/Android;
+Google Places/Geocoding billing is active and the search bar works
+(Enter key or the ▶ button, not just picking a dropdown suggestion).
 
 ## Two Monday.com column-value gotchas learned the hard way
 - Location-type columns must be written via GraphQL mutation with the
