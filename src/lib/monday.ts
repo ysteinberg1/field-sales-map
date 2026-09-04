@@ -203,6 +203,25 @@ export async function deleteItem(itemId: string): Promise<void> {
   await mondayGraphQL<{ delete_item: { id: string } }>(query);
 }
 
+// Edits an existing item's columns. A "name" key inside columnValues
+// renames the item itself — that's Monday's own convention for
+// change_multiple_column_values, not a column we invented.
+export async function updateItem(
+  boardId: number,
+  itemId: string,
+  columnValues: Record<string, unknown>
+): Promise<void> {
+  const escapedValues = JSON.stringify(JSON.stringify(columnValues));
+  const query = `mutation {
+    change_multiple_column_values(
+      board_id: ${boardId},
+      item_id: ${itemId},
+      column_values: ${escapedValues}
+    ) { id }
+  }`;
+  await mondayGraphQL<{ change_multiple_column_values: { id: string } }>(query);
+}
+
 export async function fetchItemDetail(
   itemId: string,
   columnIds: string[]

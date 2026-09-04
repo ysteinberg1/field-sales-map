@@ -7,6 +7,7 @@ export interface LogEntry {
   ts: string;
   type:
     | "lead_created"
+    | "lead_edited"
     | "lead_deleted"
     | "manual_sync"
     | "nightly_sync"

@@ -124,6 +124,11 @@ const STATUS_OPTIONS = [
   "What's Here",
 ];
 
+// SalesRabbit columns the edit form reads back out of the popup's already
+// fetched detail payload. Same IDs the create/update routes write to.
+const SALESRABBIT_NOTE_COL = "long_text_mm4v6hdv";
+const SALESRABBIT_STATUS_COL = "color_mm4vht3r";
+
 // Raw Monday column ID -> human label, for the tap-to-view popup.
 const FIELD_LABELS: Record<string, string> = {
   color_mm4v4hed: "Lead Owner",
@@ -216,6 +221,18 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
   const searchGoRef = useRef<(() => void) | null>(null);
   const showPinInfoRef = useRef<((pin: Pin, marker: google.maps.Marker) => void) | null>(null);
   const openNewLeadPanelRef = useRef<((latLng: google.maps.LatLng) => void) | null>(null);
+  const openEditPanelRef = useRef<
+    | ((lead: {
+        itemId: string;
+        lat: number;
+        lng: number;
+        name: string;
+        address: string | null;
+        note: string;
+        status: string | null;
+      }) => void)
+    | null
+  >(null);
   const deleteLeadRef = useRef<((pin: Pin, marker: google.maps.Marker) => void) | null>(null);
   // The new-lead form docks to a fixed spot near the bottom of the
   // viewport (see JSX) rather than anchoring to the tapped point — on a
@@ -230,6 +247,10 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
     lng: number;
     address: string | null;
     loadingAddress: boolean;
+    // Set when the panel is editing an existing SalesRabbit lead rather
+    // than creating a new one. The panel is otherwise identical, so it's
+    // reused rather than duplicated into a second near-copy.
+    editItemId?: string;
   } | null>(null);
   const [dealName, setDealName] = useState("");
   const [dealNote, setDealNote] = useState("");
@@ -486,9 +507,16 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
               })
               .join("");
 
-            const deleteBtn =
+            // Edit and Delete are SalesRabbit-only — those are the leads
+            // salesmen create in the field. The other three boards are
+            // read-only here (Deals is worked live in Monday, the other
+            // two are frozen imports).
+            const actionBtns =
               pin.board === "salesrabbit"
-                ? `<button id="fm-popup-delete" style="font-size:12px;color:#b23b34;background:none;border:none;padding:0;cursor:pointer">Delete lead</button>`
+                ? `<div style="display:flex;gap:12px;align-items:center">
+                     <button id="fm-popup-edit" style="font-size:12px;color:#2f6b1f;font-weight:500;background:none;border:none;padding:0;cursor:pointer">Edit lead</button>
+                     <button id="fm-popup-delete" style="font-size:12px;color:#b23b34;background:none;border:none;padding:0;cursor:pointer">Delete lead</button>
+                   </div>`
                 : `<span style="font-size:12px;color:#a3a3a3;font-style:italic">Synced from Monday</span>`;
 
             const mainView = `<div style="min-width:230px;border-left:4px solid ${meta.color};padding:12px 12px 12px 10px;font-weight:400">
@@ -511,7 +539,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
                  </div>
                  <div style="margin-top:10px;padding-top:8px;border-top:1px solid #eee;display:flex;justify-content:space-between;align-items:center;font-size:12px">
                    <div style="color:#a3a3a3">Owned by <b style="color:#404040;font-weight:500">${ownerName ?? "—"}</b></div>
-                   ${deleteBtn}
+                   ${actionBtns}
                  </div>
                </div>`;
 
@@ -530,6 +558,22 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             const bindMainView = () => {
               google.maps.event.addListenerOnce(infoWindow, "domready", () => {
                 document.getElementById("fm-popup-close")?.addEventListener("click", () => infoWindow.close());
+                document.getElementById("fm-popup-edit")?.addEventListener("click", () => {
+                  // Everything the edit form needs was already fetched to
+                  // render this popup, so it opens pre-filled with no
+                  // second round-trip.
+                  infoWindow.close();
+                  clearActiveMarkerHighlight();
+                  openEditPanelRef.current?.({
+                    itemId: pin.itemId,
+                    lat: pin.lat,
+                    lng: pin.lng,
+                    name: full.name,
+                    address: pin.address,
+                    note: details[SALESRABBIT_NOTE_COL] ?? "",
+                    status: details[SALESRABBIT_STATUS_COL] ?? null,
+                  });
+                });
                 document.getElementById("fm-popup-delete")?.addEventListener("click", () => {
                   infoWindow.setContent(confirmView);
                   bindConfirmView();
@@ -817,6 +861,34 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
       };
       openNewLeadPanelRef.current = (latLng) => openNewLeadPanel(latLng);
 
+      // Editing reuses the same panel as creating — it just arrives
+      // pre-filled and carries the item id. No green "pending" marker is
+      // dropped: the real pin is already on the map, so one is panned
+      // clear of the panel instead of a second one appearing next to it.
+      openEditPanelRef.current = (lead) => {
+        pendingMarkerRef.current?.setMap(null);
+        pendingMarkerRef.current = null;
+
+        setDealName(lead.name);
+        setDealNote(lead.note);
+        setDealStatus(lead.status && STATUS_OPTIONS.includes(lead.status) ? lead.status : STATUS_OPTIONS[0]);
+        setPendingPoint({
+          lat: lead.lat,
+          lng: lead.lng,
+          address: lead.address,
+          loadingAddress: false,
+          editItemId: lead.itemId,
+        });
+
+        const containerEl = mapContainer.current;
+        map.panTo({ lat: lead.lat, lng: lead.lng });
+        if (containerEl) {
+          const rect = containerEl.getBoundingClientRect();
+          const targetY = Math.max(90, rect.height - PANEL_CLEARANCE_PX - 24);
+          map.panBy(0, rect.height / 2 - targetY);
+        }
+      };
+
       // Long-press-to-drop-a-pin, take 4. Every earlier version of this
       // routed the "press started" and/or "press moved" signal through the
       // Maps JS API's own translated mousedown/mousemove/dragstart events,
@@ -963,6 +1035,57 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
     const streetOnly = pendingPoint.address?.split(",")[0]?.trim();
     const name = dealName.trim() || streetOnly;
     if (!name) return;
+
+    // Editing an existing lead: push the changes to Monday, then patch the
+    // pin in place (name and status can both change, and status drives the
+    // marker icon) rather than adding a second pin for the same item.
+    if (pendingPoint.editItemId) {
+      const editItemId = pendingPoint.editItemId;
+      setSaving(true);
+      const res = await fetch("/api/update-lead", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          itemId: editItemId,
+          board: "salesrabbit",
+          name,
+          address: pendingPoint.address,
+          note: dealNote,
+          status: dealStatus,
+          lat: pendingPoint.lat,
+          lng: pendingPoint.lng,
+        }),
+      });
+      const result = await res.json().catch(() => ({ ok: false }));
+      setSaving(false);
+
+      if (result.ok) {
+        const key = `salesrabbit:${editItemId}`;
+        let updatedPin: Pin | null = null;
+        pinsRef.current = pinsRef.current.map((p) => {
+          if (!(p.board === "salesrabbit" && p.itemId === editItemId)) return p;
+          updatedPin = { ...p, name, address: pendingPoint.address, status: dealStatus };
+          return updatedPin;
+        });
+        const marker = markersRef.current.get(key);
+        if (marker && updatedPin) {
+          const iconPx = window.innerWidth >= 1024 ? 40 : 38;
+          marker.setIcon({
+            url: iconUrlForPin(updatedPin),
+            scaledSize: new google.maps.Size(iconPx, iconPx),
+            anchor: new google.maps.Point(iconPx / 2, iconPx / 2),
+          });
+        }
+      } else {
+        console.error("[field-map] Failed to save lead edit", result);
+      }
+
+      setPendingPoint(null);
+      setDealName("");
+      setDealNote("");
+      setDealStatus(STATUS_OPTIONS[0]);
+      return;
+    }
 
     setSaving(true);
     const res = await fetch("/api/create-deal", {
@@ -1215,7 +1338,9 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
             style={{ fontWeight: 400 }}
           >
             <div className="mb-3 flex items-center justify-between">
-              <div className="text-sm font-medium text-neutral-500">New lead</div>
+              <div className="text-sm font-medium text-neutral-500">
+                {pendingPoint.editItemId ? "Edit lead" : "New lead"}
+              </div>
               <button
                 type="button"
                 aria-label="Cancel"
@@ -1285,7 +1410,7 @@ export default function FieldMap({ googleMapsApiKey }: { googleMapsApiKey: strin
               disabled={(!dealName && !pendingPoint.address) || saving || pendingPoint.loadingAddress}
               onClick={submitDeal}
             >
-              {saving ? "Saving…" : "Create Lead"}
+              {saving ? "Saving…" : pendingPoint.editItemId ? "Save Changes" : "Create Lead"}
             </button>
           </div>
       )}
